@@ -1301,11 +1301,19 @@ function Dashboard({tasks, config, predictions}) {
 // ─── GANTT VIEW ───────────────────────────────────────────────────────────────
 function GanttView({tasks, config, predictions}) {
   const today = fmtDate(new Date());
+  const [ganttMode, setGanttMode] = useState("person");   // "person" | "project"
+  const [hideReleased, setHideReleased] = useState(true);
+
+  // Apply hide-released filter
+  const visibleTasks = useMemo(()=>
+    hideReleased ? tasks.filter(t=>t.status!=="Released") : tasks
+  ,[tasks, hideReleased]);
+  const releasedCount = tasks.filter(t=>t.status==="Released").length;
 
   // chartDays: earliest actualStart week → latest of (sprintEnd, latest predicted end) + 3 buffer days
   const chartDays = useMemo(()=>{
     // --- left boundary: Monday of earliest actualStart (or sprintStart if none earlier) ---
-    const allStarts = [config.sprintStart, ...tasks.map(t=>t.actualStart).filter(Boolean)];
+    const allStarts = [config.sprintStart, ...visibleTasks.map(t=>t.actualStart).filter(Boolean)];
     const earliestDate = allStarts.reduce((a,b) => a < b ? a : b);
     const ed = parseDate(earliestDate);
     const edDay = ed.getDay();
@@ -1336,13 +1344,13 @@ function GanttView({tasks, config, predictions}) {
 
   // Build per-person lanes from predictions
   const lanes = useMemo(()=>{
-    const devPersons=[...new Set(tasks.flatMap(t=>["ios","and","be","wc"].map(l=>t.owners?.[l]).filter(Boolean)))];
-    const qaPersons=[...new Set(tasks.map(t=>t.owners?.qa).filter(Boolean))];
+    const devPersons=[...new Set(visibleTasks.flatMap(t=>["ios","and","be","wc"].map(l=>t.owners?.[l]).filter(Boolean)))];
+    const qaPersons=[...new Set(visibleTasks.map(t=>t.owners?.qa).filter(Boolean))];
     const mkLane=(person,type)=>({
       key:`${type}_${person}`,person,type,
       color:TEAM[person]?.bar||T.acc,
       lane:TEAM[person]?.lane||T.bg1,
-      tasks:tasks.filter(t=>{
+      tasks:visibleTasks.filter(t=>{
         if(type==="qa") return t.owners?.qa===person&&(t.effort?.qa||0)>0;
         return ["ios","and","be","wc"].some(l=>t.owners?.[l]===person&&(t.effort?.[l]||0)>0);
       }).sort((a,b)=>{
@@ -1354,7 +1362,7 @@ function GanttView({tasks, config, predictions}) {
       })
     });
     return [...devPersons.map(p=>mkLane(p,"dev")),...qaPersons.map(p=>mkLane(p,"qa"))];
-  },[tasks]);
+  },[visibleTasks]);
 
   const COL_W=28, LABEL_W=260, ROW_H=28;
 
@@ -1378,8 +1386,52 @@ function GanttView({tasks, config, predictions}) {
     return sublane?predictions[taskId]?.[sublane]:null;
   };
 
+  // ── Project view: one row per task, segmented bar per lane ──────────────────
+  const LANE_COLORS = {ios:"#6366f1",and:"#8b5cf6",be:"#06b6d4",wc:"#10b981",qa:"#f59e0b"};
+  const LANE_LABELS = {ios:"iOS",and:"AND",be:"BE",wc:"WC",qa:"QA"};
+
+  const projectRows = useMemo(()=>{
+    return visibleTasks.map(task=>{
+      const segments = ["ios","and","be","wc","qa"]
+        .filter(l => task.owners?.[l] && (task.effort?.[l]||0)>0)
+        .map(l=>{
+          const pred = predictions[task.id]?.[l];
+          return pred ? {lane:l, start:fmtDate(pred.start), end:fmtDate(pred.end), color:LANE_COLORS[l], label:LANE_LABELS[l], person:task.owners[l]} : null;
+        }).filter(Boolean);
+      return {task, segments};
+    });
+  },[visibleTasks, predictions]);
+
   return (
     <div style={{padding:"12px 0"}} className="fade-in">
+      {/* ── Toolbar ── */}
+      <div style={{display:"flex",alignItems:"center",gap:10,padding:"0 0 10px 0",borderBottom:`1px solid ${T.b1}`,marginBottom:4}}>
+        {/* View toggle */}
+        <div style={{display:"flex",background:T.bg1,borderRadius:6,border:`1px solid ${T.b1}`,overflow:"hidden"}}>
+          {[{id:"person",label:"👤 By Person"},{id:"project",label:"📋 By Feature"}].map(v=>(
+            <button key={v.id} onClick={()=>setGanttMode(v.id)} style={{
+              padding:"5px 14px",fontSize:11,fontWeight:500,border:"none",cursor:"pointer",
+              background:ganttMode===v.id?T.acc:"transparent",
+              color:ganttMode===v.id?"#fff":T.t2,
+              transition:"all 0.15s",
+            }}>{v.label}</button>
+          ))}
+        </div>
+        {/* Hide released toggle */}
+        <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",fontSize:11,color:T.t2,userSelect:"none"}}>
+          <div onClick={()=>setHideReleased(h=>!h)} style={{
+            width:28,height:16,borderRadius:8,background:hideReleased?T.p3:T.b1,
+            position:"relative",transition:"background 0.2s",cursor:"pointer",border:`1px solid ${hideReleased?T.p3:T.b2}`,
+          }}>
+            <div style={{
+              position:"absolute",top:2,left:hideReleased?13:2,width:10,height:10,
+              borderRadius:"50%",background:"#fff",transition:"left 0.2s",
+            }}/>
+          </div>
+          Hide released
+          {releasedCount>0&&<span style={{color:T.t3}}>({releasedCount})</span>}
+        </label>
+      </div>
       <div style={{overflowX:"auto"}}>
         <div style={{minWidth:LABEL_W+chartDays.length*COL_W}}>
           {/* Week header */}
@@ -1424,8 +1476,8 @@ function GanttView({tasks, config, predictions}) {
               );
             })}
           </div>
-          {/* Lanes */}
-          {lanes.map(lane=>(
+          {/* ── Person view ── */}
+          {ganttMode==="person" && lanes.map(lane=>(
             <div key={lane.key}>
               <div style={{display:"flex",alignItems:"center",background:lane.lane,borderTop:`1px solid ${lane.color}20`,borderBottom:`1px solid ${T.b0}`}}>
                 <div style={{width:LABEL_W,minWidth:LABEL_W,padding:"5px 14px",display:"flex",alignItems:"center",gap:8}}>
@@ -1475,6 +1527,60 @@ function GanttView({tasks, config, predictions}) {
               })}
             </div>
           ))}
+
+          {/* ── Project / Feature view ── */}
+          {ganttMode==="project" && projectRows.map(({task,segments})=>{
+            const sc=STATUS_COLORS[task.status]||STATUS_COLORS["To Do"];
+            const isReleased=task.status==="Released";
+            // find bar extents: min start, max end across segments
+            const segStarts=segments.map(s=>s.start).filter(Boolean);
+            const segEnds=segments.map(s=>s.end).filter(Boolean);
+            const barStart=segStarts.length?segStarts.reduce((a,b)=>a<b?a:b):null;
+            const barEnd=segEnds.length?segEnds.reduce((a,b)=>a>b?a:b):null;
+            const startIdx=barStart?chartDays.indexOf(barStart):-1;
+            const endIdx=barEnd?chartDays.indexOf(barEnd):-1;
+            return (
+              <div key={task.id} style={{display:"flex",alignItems:"center",borderBottom:`1px solid ${T.b0}`,background:isReleased?T.bg1:T.bg0,opacity:isReleased?0.6:1}}>
+                {/* Label */}
+                <div style={{width:LABEL_W,minWidth:LABEL_W,padding:"4px 14px",display:"flex",alignItems:"center",gap:7,overflow:"hidden"}}>
+                  <span className="tag" style={{background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`,flexShrink:0,fontSize:9}}>#{task.id}</span>
+                  <span style={{fontSize:11,color:isReleased?T.t3:T.t0,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",fontWeight:isReleased?400:500}}>
+                    {isReleased?"✓ ":""}{task.name}
+                  </span>
+                </div>
+                {/* Bar cells */}
+                <div style={{display:"flex",position:"relative",height:ROW_H}}>
+                  {chartDays.map((d,di)=>{
+                    const isHol=config.holidays?.includes(d);
+                    const isTodayCol=d===today;
+                    const isPreSprint=d<config.sprintStart;
+                    const isPastEnd=(config.sprintEnd&&d>config.sprintEnd);
+                    // Check if this day is inside any segment
+                    const activeSeg=segments.find(s=>s.start<=d&&s.end>=d);
+                    const cellBg=activeSeg?activeSeg.color+(isReleased?"33":"55"):isHol?T.p2bg:isTodayCol?`${T.acc}08`:isPreSprint?T.bg2:"transparent";
+                    return (
+                      <div key={d} title={activeSeg?`${activeSeg.label}: ${activeSeg.person}`:""}
+                        style={{width:COL_W,minWidth:COL_W,height:ROW_H,
+                          background:cellBg,
+                          borderRight:di===startIdx-1||di===endIdx?`1px solid ${activeSeg?.color||T.b0}60`:`1px solid ${T.b0}`,
+                          opacity:isPreSprint&&!activeSeg?0.5:1,
+                          position:"relative",
+                        }}>
+                        {/* Lane label on first cell of each segment */}
+                        {activeSeg&&(di===0||!segments.find(s=>s.start<=chartDays[di-1]&&s.end>=chartDays[di-1]&&s.lane===activeSeg.lane))&&(
+                          <span style={{position:"absolute",top:"50%",left:2,transform:"translateY(-50%)",fontSize:8,color:"#fff",fontWeight:700,pointerEvents:"none",opacity:0.9,letterSpacing:0.3}}>
+                            {activeSeg.label}
+                          </span>
+                        )}
+                        {isTodayCol&&<div style={{position:"absolute",top:0,left:"50%",width:1,height:"100%",background:T.acc,opacity:0.6}}/>}
+                        {isPastEnd&&!activeSeg&&<div style={{position:"absolute",inset:0,background:`${T.p1}08`}}/>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
       <div style={{padding:"10px 20px",display:"flex",gap:14,flexWrap:"wrap",borderTop:`1px solid ${T.b1}`,marginTop:8}}>
