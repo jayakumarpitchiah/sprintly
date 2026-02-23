@@ -1462,16 +1462,19 @@ function GanttView({tasks, config, predictions}) {
           <div style={{display:"flex",marginLeft:LABEL_W,borderBottom:`1px solid ${T.b1}`,position:"sticky",top:52,zIndex:10,background:T.bg0}}>
             {chartDays.map(d=>{
               const dt=parseDate(d);
-              const isToday=d===today, isHol=config.holidays.includes(d), isPreSprint=d<config.sprintStart, isPostSprint=config.sprintEnd&&d>config.sprintEnd;
+              const isToday=d===today, isHol=config.holidays.includes(d), isPreSprint=d<config.sprintStart, isPostSprint=config.sprintEnd&&d>config.sprintEnd, isSprintEndDay=config.sprintEnd&&d===config.sprintEnd;
               return (
                 <div key={d} style={{width:COL_W,minWidth:COL_W,textAlign:"center",padding:"3px 0",fontSize:9,
                   color:isHol?T.p2:isToday?T.acc:(isPreSprint||isPostSprint)?T.t3:T.t2,
                   fontWeight:isToday?600:400,
                   background:isHol?T.p2bg:isToday?`${T.acc}10`:(isPreSprint||isPostSprint)?T.bg2:"transparent",
-                  borderRight:`1px solid ${T.b0}`,fontFamily:"'JetBrains Mono',monospace",
+                  borderRight:isSprintEndDay?`3px solid ${T.p1}`:`1px solid ${T.b0}`,
+                  fontFamily:"'JetBrains Mono',monospace",
                   borderBottom:isToday?`2px solid ${T.acc}`:isHol?`1px solid ${T.p2}60`:isPostSprint?`1px dashed ${T.b2}`:"none",
                   opacity:(isPreSprint||isPostSprint)?0.6:1,
+                  position:"relative",
                 }}>
+                {isSprintEndDay&&<div style={{position:"absolute",top:-14,right:-1,fontSize:8,color:T.p1,fontWeight:600,whiteSpace:"nowrap",background:T.bg0,padding:"1px 3px",borderRadius:2,border:`1px solid ${T.p1}`,zIndex:5,lineHeight:1.2}}>Sprint end</div>}
                   {dt.getDate()}<br/><span style={{fontSize:7,opacity:0.6}}>{dt.toLocaleDateString("en-GB",{month:"short"}).slice(0,3)}</span>
                 </div>
               );
@@ -1519,10 +1522,10 @@ function GanttView({tasks, config, predictions}) {
                       if(inBar) barBg=isRel?`${T.p3}50`:hasActualEnd?`${T.acc}40`:`${lane.color}55`;
                       const cellBase=isPreSprint&&!inBar?T.bg2:isPostSprint&&!inBar?T.bg2:inBar?barBg:isHol?T.p2bg:isOff?T.p1bg:isL2?`${T.p2}20`:isTodayCol?`${T.acc}08`:"transparent";
                       return (
-                        <div key={d} style={{width:COL_W,minWidth:COL_W,height:ROW_H,background:cellBase,opacity:(isPreSprint||isPostSprint)&&!inBar?0.6:1,borderLeft:isStart&&inBar?`2px solid ${lane.color}80`:"none",borderRight:isEnd&&inBar?`2px solid ${lane.color}80`:isTodayCol?`1px solid ${T.acc}30`:`1px solid ${T.b0}`,position:"relative"}}>
+                        <div key={d} style={{width:COL_W,minWidth:COL_W,height:ROW_H,background:cellBase,opacity:(isPreSprint||isPostSprint)&&!inBar?0.6:1,borderLeft:isStart&&inBar?`2px solid ${lane.color}80`:"none",borderRight:(config.sprintEnd&&d===config.sprintEnd)?`3px solid ${T.p1}`:isEnd&&inBar?`2px solid ${lane.color}80`:isTodayCol?`1px solid ${T.acc}30`:`1px solid ${T.b0}`,position:"relative"}}>
                           {isOff&&inBar&&<div style={{position:"absolute",inset:0,background:`${T.p1}20`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,color:T.p1}}>off</div>}
                           {isHol&&inBar&&<div style={{position:"absolute",inset:0,background:`${T.p2}20`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,color:T.p2}}>h</div>}
-                          {isL2&&<div title={`${lane.person} on L2 support — no dev capacity`} style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,fontWeight:700,color:T.p2,opacity:inBar?0.8:0.6,letterSpacing:0.2,pointerEvents:"none"}}>L2</div>}
+                          {isL2&&!isPostSprint&&<div title={`${lane.person} on L2 support — no dev capacity`} style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,fontWeight:700,color:T.p2,opacity:inBar?0.8:0.6,letterSpacing:0.2,pointerEvents:"none"}}>L2</div>}
                         </div>
                       );
                     })}
