@@ -1621,6 +1621,15 @@ function TableView({tasks, config, editMode, updateTasks, updateConfig, predicti
     if(sortBy==="priority") t.sort((a,b)=>(PRIORITY_ORDER[a.priority]??3)-(PRIORITY_ORDER[b.priority]??3));
     else if(sortBy==="status") t.sort((a,b)=>a.status.localeCompare(b.status));
     else if(sortBy==="id") t.sort((a,b)=>a.id-b.id);
+    else if(sortBy==="name") t.sort((a,b)=>a.name.localeCompare(b.name));
+    else if(["plannedStart","predictedEnd","actualStart","actualEnd"].includes(sortBy)){
+      t.sort((a,b)=>{
+        const av = sortBy==="predictedEnd" ? (predictions[a.id]? Object.values(predictions[a.id]).map(p=>p?.end?fmtDate(p.end):"").filter(Boolean).reduce((x,y)=>x>y?x:y,"") : "") : (a[sortBy]||"");
+        const bv = sortBy==="predictedEnd" ? (predictions[b.id]? Object.values(predictions[b.id]).map(p=>p?.end?fmtDate(p.end):"").filter(Boolean).reduce((x,y)=>x>y?x:y,"") : "") : (b[sortBy]||"");
+        if(!av&&!bv) return 0; if(!av) return 1; if(!bv) return -1;
+        return av<bv?-1:av>bv?1:0;
+      });
+    }
     return t;
   },[tasks,sortBy,filterStatus,filterPersons,filterPriority]);
 
@@ -1684,15 +1693,23 @@ function TableView({tasks, config, editMode, updateTasks, updateConfig, predicti
       )}
       {/* Toolbar */}
       <div style={{padding:"10px 16px",borderBottom:`1px solid ${T.b1}`,background:T.bg0,flexShrink:0}}>
-        <div style={{display:"flex",gap:4,marginBottom:6,alignItems:"center",flexWrap:"wrap"}}>
-          {/* Status filter */}
-          {["All",...STATUSES].map(s=>(
-            <button key={s} className="btn" onClick={()=>setFilterStatus(s)} style={{padding:"3px 9px",borderRadius:4,fontSize:11,background:filterStatus===s?T.bg3:"transparent",color:filterStatus===s?T.t0:T.t2,border:`1px solid ${filterStatus===s?T.b2:"transparent"}`}}>{s}</button>
-          ))}
-          <div style={{width:1,height:14,background:T.b1}}/>
-          {["All","P1","P2","P3"].map(p=>(
-            <button key={p} className="btn" onClick={()=>setFilterPriority(p)} style={{padding:"3px 8px",borderRadius:4,fontSize:11,background:filterPriority===p?T.bg3:"transparent",color:filterPriority===p?(p==="P1"?T.p1:p==="P2"?T.p2:p==="P3"?T.p3:T.t0):T.t2,border:`1px solid ${filterPriority===p?T.b2:"transparent"}`}}>{p}</button>
-          ))}
+        <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"center",flexWrap:"wrap"}}>
+          {/* Status dropdown */}
+          <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)}
+            style={{padding:"4px 8px",borderRadius:5,fontSize:11,background:T.bg2,color:filterStatus!=="All"?T.acc:T.t1,border:`1px solid ${filterStatus!=="All"?T.acc:T.b1}`,cursor:"pointer",outline:"none",fontWeight:filterStatus!=="All"?500:400}}>
+            <option value="All">All Statuses</option>
+            {STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
+          </select>
+          {/* Priority dropdown */}
+          <select value={filterPriority} onChange={e=>setFilterPriority(e.target.value)}
+            style={{padding:"4px 8px",borderRadius:5,fontSize:11,background:T.bg2,color:filterPriority!=="All"?(filterPriority==="P1"?T.p1:filterPriority==="P2"?T.p2:T.p3):T.t1,border:`1px solid ${filterPriority!=="All"?(filterPriority==="P1"?T.p1:filterPriority==="P2"?T.p2:T.p3):T.b1}`,cursor:"pointer",outline:"none",fontWeight:filterPriority!=="All"?500:400}}>
+            <option value="All">All Priorities</option>
+            {["P1","P2","P3"].map(p=><option key={p} value={p}>{p}</option>)}
+          </select>
+          {(filterStatus!=="All"||filterPriority!=="All")&&(
+            <button className="btn" onClick={()=>{setFilterStatus("All");setFilterPriority("All");}}
+              style={{padding:"3px 8px",borderRadius:5,fontSize:10,background:"transparent",color:T.t3,border:`1px solid ${T.b1}`}}>✕ clear</button>
+          )}
           <div style={{flex:1}}/>
           {editMode&&(
             <>
@@ -1736,15 +1753,15 @@ function TableView({tasks, config, editMode, updateTasks, updateConfig, predicti
             <tr style={{position:"sticky",top:0,zIndex:20}}>
               {editMode&&<th style={{padding:"8px 8px",background:T.bg1,borderBottom:`1px solid ${T.b1}`,width:32,position:"sticky",top:0}}><input type="checkbox" checked={selected.size===sorted.length&&sorted.length>0} onChange={toggleAll} style={{cursor:"pointer",accentColor:T.acc}}/></th>}
               {[["#","id"],["Pri","priority"],["Task","name"]].map(([l,k],i)=>
-                <th key={k} onClick={()=>setSortBy(k)} style={{padding:"8px 10px",fontSize:10,color:sortBy===k?T.acc:T.t2,fontWeight:600,textTransform:"uppercase",letterSpacing:1,cursor:"pointer",background:T.bg1,whiteSpace:"nowrap",textAlign:"left",borderBottom:`1px solid ${T.b1}`,position:"sticky",top:0,left:i===2?0:undefined,zIndex:i===2?16:undefined}}>{l}{sortBy===k?" ↑":""}</th>
+                <th key={k} onClick={()=>setSortBy(k===sortBy?"priority":k)} style={{padding:"8px 10px",fontSize:10,color:sortBy===k?T.acc:T.t2,fontWeight:600,textTransform:"uppercase",letterSpacing:1,cursor:"pointer",background:sortBy===k?`${T.acc}12`:T.bg1,whiteSpace:"nowrap",textAlign:"left",borderBottom:`1px solid ${T.b1}`,position:"sticky",top:0,left:i===2?0:undefined,zIndex:i===2?16:undefined}}>{l}{sortBy===k?" ↑":""}</th>
               )}
               {["iOS","And","BE","WC","QA","iOS Dev","And Dev","BE","WC","QA"].map(h=>(
                 <th key={h+"h"} style={{padding:"8px 8px",fontSize:10,color:T.t2,fontWeight:600,textTransform:"uppercase",letterSpacing:1,background:T.bg1,borderBottom:`1px solid ${T.b1}`,whiteSpace:"nowrap",textAlign:"center",position:"sticky",top:0}}>{h}</th>
               ))}
               <th style={{padding:"8px 10px",fontSize:10,color:T.t2,fontWeight:600,textTransform:"uppercase",letterSpacing:1,background:T.bg1,borderBottom:`1px solid ${T.b1}`,whiteSpace:"nowrap",position:"sticky",top:0}}>Depends on</th>
               {th("Status","status")}
-              {["Plan Start","Pred End","Act Start","Act End"].map(h=>(
-                <th key={h} style={{padding:"8px 8px",fontSize:10,color:T.t2,fontWeight:600,textTransform:"uppercase",letterSpacing:1,background:`${T.bg2}`,borderBottom:`1px solid ${T.b1}`,whiteSpace:"nowrap",borderLeft:`1px solid ${T.b1}`,position:"sticky",top:0}}>{h}</th>
+              {[["Plan Start","plannedStart"],["Pred End","predictedEnd"],["Act Start","actualStart"],["Act End","actualEnd"]].map(([h,k])=>(
+                <th key={h} onClick={()=>setSortBy(k===sortBy?"priority":k)} style={{padding:"8px 8px",fontSize:10,color:sortBy===k?T.acc:T.t2,fontWeight:600,textTransform:"uppercase",letterSpacing:1,background:sortBy===k?`${T.acc}12`:T.bg2,borderBottom:`1px solid ${T.b1}`,whiteSpace:"nowrap",borderLeft:`1px solid ${T.b1}`,position:"sticky",top:0,cursor:"pointer",userSelect:"none"}}>{h}{sortBy===k?" ↑":""}</th>
               ))}
               <th style={{padding:"8px 8px",fontSize:10,color:T.p2,fontWeight:600,textTransform:"uppercase",letterSpacing:1,background:`${T.p2bg}`,borderBottom:`1px solid ${T.b1}`,whiteSpace:"nowrap",position:"sticky",top:0}}>Slip</th>
               <th style={{padding:"8px 10px",fontSize:10,color:T.t2,fontWeight:600,textTransform:"uppercase",letterSpacing:1,background:T.bg1,borderBottom:`1px solid ${T.b1}`,position:"sticky",top:0}}>Notes</th>
