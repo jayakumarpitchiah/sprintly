@@ -840,6 +840,166 @@ function BulkEventAdder({ person, config, updateConfig }) {
   );
 }
 
+
+// ─── AUTH GATE ────────────────────────────────────────────────────────────────
+const AUTH_KEY = "sprintly_auth";
+
+async function hashPassword(password) {
+  const msgBuffer = new TextEncoder().encode(password);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+function AuthGate({ children }) {
+  const [mode, setMode] = useState(null);       // null=loading, "set"|"login"|"unlocked"
+  const [input, setInput] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const stored = localStorage.getItem(AUTH_KEY);
+    setMode(stored ? "login" : "set");
+  }, []);
+
+  const handleSet = async () => {
+    if (input.length < 4) { setError("Password must be at least 4 characters"); return; }
+    if (input !== confirm) { setError("Passwords don't match"); return; }
+    setLoading(true);
+    const hash = await hashPassword(input);
+    localStorage.setItem(AUTH_KEY, hash);
+    setMode("unlocked");
+    setLoading(false);
+  };
+
+  const handleLogin = async () => {
+    if (!input) { setError("Enter your password"); return; }
+    setLoading(true);
+    const hash = await hashPassword(input);
+    const stored = localStorage.getItem(AUTH_KEY);
+    if (hash === stored) {
+      setMode("unlocked");
+      setError("");
+    } else {
+      setError("Incorrect password");
+    }
+    setLoading(false);
+  };
+
+  const handleKey = (e) => {
+    if (e.key === "Enter") mode === "set" ? handleSet() : handleLogin();
+  };
+
+  if (mode === null) return null;
+  if (mode === "unlocked") return children;
+
+  const isSet = mode === "set";
+
+  return (
+    <div style={{
+      minHeight: "100vh", background: "#0f1117",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
+    }}>
+      <div style={{
+        width: 360, background: "#1a1d27",
+        border: "1px solid #2a2d3a", borderRadius: 14,
+        padding: "36px 32px", boxShadow: "0 24px 48px #00000060",
+      }}>
+        {/* Logo */}
+        <div style={{textAlign: "center", marginBottom: 28}}>
+          <div style={{
+            width: 44, height: 44, background: "linear-gradient(135deg,#6366f1,#8b5cf6)",
+            borderRadius: 12, display: "inline-flex", alignItems: "center",
+            justifyContent: "center", fontSize: 22, marginBottom: 12,
+          }}>S</div>
+          <div style={{fontSize: 20, fontWeight: 700, color: "#f0f0f0", letterSpacing: -0.5}}>Sprintly</div>
+          <div style={{fontSize: 12, color: "#666", marginTop: 4}}>
+            {isSet ? "Set a password to protect your sprint data" : "Enter your password to continue"}
+          </div>
+        </div>
+
+        {/* Fields */}
+        <div style={{marginBottom: 12}}>
+          <label style={{fontSize: 11, color: "#888", display: "block", marginBottom: 5, textTransform: "uppercase", letterSpacing: 0.5}}>Password</label>
+          <input
+            type="password"
+            value={input}
+            onChange={e => { setInput(e.target.value); setError(""); }}
+            onKeyDown={handleKey}
+            placeholder={isSet ? "Choose a password (min 4 chars)" : "Your password"}
+            autoFocus
+            style={{
+              width: "100%", padding: "10px 12px", borderRadius: 7,
+              background: "#0f1117", border: "1px solid #2a2d3a",
+              color: "#f0f0f0", fontSize: 14, outline: "none",
+              boxSizing: "border-box",
+              transition: "border-color 0.15s",
+            }}
+          />
+        </div>
+
+        {isSet && (
+          <div style={{marginBottom: 12}}>
+            <label style={{fontSize: 11, color: "#888", display: "block", marginBottom: 5, textTransform: "uppercase", letterSpacing: 0.5}}>Confirm Password</label>
+            <input
+              type="password"
+              value={confirm}
+              onChange={e => { setConfirm(e.target.value); setError(""); }}
+              onKeyDown={handleKey}
+              placeholder="Repeat password"
+              style={{
+                width: "100%", padding: "10px 12px", borderRadius: 7,
+                background: "#0f1117", border: "1px solid #2a2d3a",
+                color: "#f0f0f0", fontSize: 14, outline: "none",
+                boxSizing: "border-box",
+              }}
+            />
+          </div>
+        )}
+
+        {error && (
+          <div style={{fontSize: 12, color: "#f87171", marginBottom: 12, padding: "8px 10px", background: "#f8717115", borderRadius: 5, border: "1px solid #f8717130"}}>
+            {error}
+          </div>
+        )}
+
+        <button
+          onClick={isSet ? handleSet : handleLogin}
+          disabled={loading}
+          style={{
+            width: "100%", padding: "11px 0", borderRadius: 7,
+            background: loading ? "#3a3d4a" : "linear-gradient(135deg,#6366f1,#8b5cf6)",
+            color: "#fff", border: "none", fontSize: 14, fontWeight: 600,
+            cursor: loading ? "not-allowed" : "pointer",
+            marginTop: 4,
+          }}
+        >
+          {loading ? "..." : isSet ? "Set Password & Enter" : "Unlock Sprintly"}
+        </button>
+
+        {!isSet && (
+          <div style={{textAlign: "center", marginTop: 16}}>
+            <button
+              onClick={() => {
+                if (window.confirm("This will clear your password. You'll need to set a new one. Continue?")) {
+                  localStorage.removeItem(AUTH_KEY);
+                  setMode("set");
+                  setInput(""); setConfirm(""); setError("");
+                }
+              }}
+              style={{background: "none", border: "none", color: "#555", fontSize: 11, cursor: "pointer", textDecoration: "underline"}}
+            >
+              Forgot password? Reset
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [tasks, setTasks] = useState(DEFAULT_TASKS);
   const [config, setConfig] = useState(DEFAULT_CONFIG);
@@ -918,6 +1078,7 @@ export default function App() {
   );
 
   return (
+    <AuthGate>
     <div style={{background:T.bg0,minHeight:"100vh",fontFamily:"'Inter','SF Pro Text',system-ui,sans-serif",color:T.t0}}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -944,6 +1105,7 @@ export default function App() {
       </div>
       {calendarOpen&&<TeamCalendarPanel config={config} updateConfig={updateConfig} tasks={tasks} onClose={()=>setCalendarOpen(false)}/>}
     </div>
+    </AuthGate>
   );
 }
 
