@@ -2050,8 +2050,48 @@ function AddTaskDrawer({tasks, updateTasks, onClose, config, predictions}) {
 
 // ─── CONFIG PANEL ─────────────────────────────────────────────────────────────
 function ConfigPanel({config, updateConfig, onClose}) {
-  const [newHol, setNewHol] = useState("");
+  const [bulkInput, setBulkInput] = useState("");
+  const [bulkError, setBulkError] = useState("");
+  const [bulkPreview, setBulkPreview] = useState([]);
   const inp={background:T.bg2,color:T.t0,border:`1px solid ${T.b2}`,borderRadius:5,padding:"5px 9px",fontSize:12,width:"100%"};
+
+  // Parse free-form date input: single, comma-separated, or newline-separated
+  const parseDates = (raw) => {
+    const tokens = raw.split(/[,\n]+/).map(s=>s.trim()).filter(Boolean);
+    const valid=[], invalid=[];
+    tokens.forEach(tok=>{
+      // Accept: YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY, DD MM YYYY
+      let d = null;
+      if(/^\d{4}-\d{2}-\d{2}$/.test(tok)) d=tok;
+      else if(/^\d{2}[\/-]\d{2}[\/-]\d{4}$/.test(tok)){
+        const [dd,mm,yyyy]=tok.split(/[\/-]/); d=`${yyyy}-${mm}-${dd}`;
+      } else if(/^\d{1,2}\s+\w+\s+\d{4}$/i.test(tok)){
+        const dt=new Date(tok); if(!isNaN(dt)) d=fmtDate(dt);
+      }
+      if(d && !isNaN(new Date(d))) valid.push(d);
+      else invalid.push(tok);
+    });
+    return {valid, invalid};
+  };
+
+  const handlePreview = () => {
+    if(!bulkInput.trim()){setBulkError("Enter at least one date");return;}
+    const {valid,invalid}=parseDates(bulkInput);
+    if(invalid.length) setBulkError(`Could not parse: ${invalid.join(", ")}`);
+    else setBulkError("");
+    const existing=new Set(config.holidays||[]);
+    const fresh=valid.filter(d=>!existing.has(d));
+    const dupes=valid.filter(d=>existing.has(d));
+    setBulkPreview(valid.map(d=>({date:d, isDupe:dupes.includes(d)})));
+  };
+
+  const handleAdd = () => {
+    const toAdd = bulkPreview.filter(p=>!p.isDupe).map(p=>p.date);
+    if(!toAdd.length) return;
+    updateConfig(c=>({...c, holidays:[...(c.holidays||[]),...toAdd].sort()}));
+    setBulkInput(""); setBulkPreview([]); setBulkError("");
+  };
+
   return (
     <div style={{background:T.bg1,border:`1px solid ${T.b2}`,borderRadius:8,padding:16,marginTop:8}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
@@ -2068,19 +2108,77 @@ function ConfigPanel({config, updateConfig, onClose}) {
           <input type="date" value={config.sprintEnd||"2026-03-31"} onChange={e=>updateConfig(c=>({...c,sprintEnd:e.target.value}))} style={inp}/>
         </div>
       </div>
+
+      {/* ── Holidays ── */}
       <div>
-        <label style={{fontSize:10,color:T.t2,display:"block",marginBottom:6,textTransform:"uppercase",letterSpacing:0.5}}>Public Holidays</label>
-        <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:8}}>
-          {(config.holidays||[]).map((h,i)=>(
-            <div key={h} style={{display:"flex",alignItems:"center",gap:4,background:T.p2bg,border:`1px solid ${T.sDev.border}`,borderRadius:5,padding:"3px 8px"}}>
-              <span style={{fontSize:11,fontFamily:"'JetBrains Mono',monospace",color:T.p2}}>{h.slice(5)}</span>
-              <button className="btn" onClick={()=>updateConfig(c=>({...c,holidays:c.holidays.filter((_,j)=>j!==i)}))} style={{background:"transparent",color:T.t3,border:"none",fontSize:12,padding:"0 2px"}}>×</button>
-            </div>
-          ))}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+          <label style={{fontSize:10,color:T.t2,textTransform:"uppercase",letterSpacing:0.5}}>Company Holidays</label>
+          {(config.holidays||[]).length>0&&(
+            <button className="btn" onClick={()=>{if(window.confirm("Clear all holidays?")) updateConfig(c=>({...c,holidays:[]}));}}
+              style={{fontSize:10,color:T.p1,background:"transparent",border:"none",cursor:"pointer",padding:"0 4px"}}>Clear all</button>
+          )}
         </div>
-        <div style={{display:"flex",gap:6}}>
-          <input type="date" value={newHol} onChange={e=>setNewHol(e.target.value)} style={{...inp,flex:1}}/>
-          <button className="btn" onClick={()=>{if(!newHol||(config.holidays||[]).includes(newHol)) return; updateConfig(c=>({...c,holidays:[...(c.holidays||[]),newHol].sort()}));setNewHol("");}} style={{padding:"5px 12px",borderRadius:5,background:T.bg3,color:T.acc,border:`1px solid ${T.b2}`,fontSize:11,fontWeight:500,whiteSpace:"nowrap"}}>+ Add</button>
+
+        {/* Existing holidays */}
+        {(config.holidays||[]).length>0&&(
+          <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:10,padding:8,background:T.bg0,borderRadius:6,border:`1px solid ${T.b1}`}}>
+            {(config.holidays||[]).map((h,i)=>{
+              const dt=parseDate(h); const label=dt.toLocaleDateString("en-GB",{day:"numeric",month:"short"});
+              return (
+                <div key={h} style={{display:"flex",alignItems:"center",gap:4,background:T.holBg,border:`1px solid ${T.hol}40`,borderRadius:5,padding:"3px 8px"}}>
+                  <span style={{fontSize:11,color:T.hol,fontWeight:500}}>🎉 {label}</span>
+                  <button className="btn" onClick={()=>updateConfig(c=>({...c,holidays:c.holidays.filter((_,j)=>j!==i)}))}
+                    style={{background:"transparent",color:T.t3,border:"none",fontSize:11,padding:"0 2px",cursor:"pointer",lineHeight:1}}>×</button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Bulk input */}
+        <div style={{background:T.bg0,borderRadius:6,border:`1px solid ${T.b1}`,padding:10}}>
+          <div style={{fontSize:10,color:T.t3,marginBottom:6}}>Enter one or multiple dates — comma or newline separated</div>
+          <textarea
+            value={bulkInput}
+            onChange={e=>{setBulkInput(e.target.value);setBulkPreview([]);setBulkError("");}}
+            placeholder={"2026-03-25\n2026-04-14, 2026-04-15\n25/03/2026"}
+            rows={3}
+            style={{...inp,resize:"vertical",fontFamily:"'JetBrains Mono',monospace",fontSize:11,lineHeight:1.6}}
+          />
+          {bulkError&&<div style={{fontSize:11,color:T.p1,marginTop:4}}>{bulkError}</div>}
+
+          {/* Preview */}
+          {bulkPreview.length>0&&(
+            <div style={{marginTop:8,padding:"8px 10px",background:T.bg1,borderRadius:5,border:`1px solid ${T.b2}`}}>
+              <div style={{fontSize:10,color:T.t3,marginBottom:5}}>Preview — {bulkPreview.filter(p=>!p.isDupe).length} new, {bulkPreview.filter(p=>p.isDupe).length} already added</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+                {bulkPreview.map(({date,isDupe})=>{
+                  const dt=parseDate(date); const label=dt.toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"});
+                  return (
+                    <span key={date} style={{fontSize:11,padding:"2px 7px",borderRadius:4,
+                      background:isDupe?T.bg2:T.holBg,
+                      color:isDupe?T.t3:T.hol,
+                      border:`1px solid ${isDupe?T.b1:T.hol+"40"}`,
+                      textDecoration:isDupe?"line-through":"none",
+                    }}>🎉 {label}{isDupe?" (exists)":""}</span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <div style={{display:"flex",gap:6,marginTop:8}}>
+            <button className="btn" onClick={handlePreview}
+              style={{padding:"5px 14px",borderRadius:5,background:T.bg3,color:T.t1,border:`1px solid ${T.b2}`,fontSize:11,fontWeight:500}}>
+              Preview
+            </button>
+            {bulkPreview.filter(p=>!p.isDupe).length>0&&(
+              <button className="btn" onClick={handleAdd}
+                style={{padding:"5px 14px",borderRadius:5,background:T.hol,color:"#fff",border:"none",fontSize:11,fontWeight:600}}>
+                Add {bulkPreview.filter(p=>!p.isDupe).length} holiday{bulkPreview.filter(p=>!p.isDupe).length>1?"s":""}
+              </button>
+            )}
+          </div>
         </div>
         <div style={{fontSize:10,color:T.t3,marginTop:6}}>Leave and L2 rota are managed via 📅 Team Calendar in the header</div>
       </div>
