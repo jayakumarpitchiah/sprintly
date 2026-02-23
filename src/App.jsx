@@ -1329,7 +1329,7 @@ function GanttView({tasks, config, predictions}) {
     // snap to Friday of that week, + 3 buffer working days
     const fDay = furthest.getDay();
     const daysToFri = fDay === 0 ? 5 : (fDay === 6 ? 6 : 5 - fDay);
-    const chartEnd = addDays(furthest, daysToFri + 3);
+    const chartEnd = addDays(furthest, daysToFri + 1);
 
     const days = [];
     let cur = new Date(chartStart);
@@ -1443,16 +1443,17 @@ function GanttView({tasks, config, predictions}) {
               const friLabel=friDt.toLocaleDateString("en-GB",{day:"numeric",month:"short"});
               const dayCount=wg.end-wg.start+1;
               const isPreSprint=wg.label<config.sprintStart;
+              const isPostSprint=config.sprintEnd&&wg.label>config.sprintEnd;
               return (
                 <div key={wi} style={{width:dayCount*COL_W,padding:"3px 0",textAlign:"center",fontSize:9,
-                  color:isPreSprint?T.t3:T.t2,fontWeight:500,
+                  color:(isPreSprint||isPostSprint)?T.t3:T.t2,fontWeight:500,
                   borderRight:`1px solid ${T.b0}`,
-                  background:isPreSprint?T.bg2:wi%2===0?T.bg0:T.bg1,
+                  background:(isPreSprint||isPostSprint)?T.bg2:wi%2===0?T.bg0:T.bg1,
                   overflow:"hidden",whiteSpace:"nowrap",
-                  fontStyle:isPreSprint?"italic":"normal",
-                  borderBottom:isPreSprint?`2px dashed ${T.b2}`:"none",
+                  fontStyle:(isPreSprint||isPostSprint)?"italic":"normal",
+                  borderBottom:(isPreSprint||isPostSprint)?`2px dashed ${T.b2}`:"none",
                 }}>
-                  {isPreSprint?"Pre · ":"W"+(wi+1)+" · "}{monLabel}{dayCount>=4?` – ${friLabel}`:""}
+                  {isPreSprint?"Pre · ":isPostSprint?"Post · ":"W"+(wi+1)+" · "}{monLabel}{dayCount>=4?` – ${friLabel}`:""}
                 </div>
               );
             })}
@@ -1461,15 +1462,15 @@ function GanttView({tasks, config, predictions}) {
           <div style={{display:"flex",marginLeft:LABEL_W,borderBottom:`1px solid ${T.b1}`,position:"sticky",top:52,zIndex:10,background:T.bg0}}>
             {chartDays.map(d=>{
               const dt=parseDate(d);
-              const isToday=d===today, isHol=config.holidays.includes(d), isPreSprint=d<config.sprintStart;
+              const isToday=d===today, isHol=config.holidays.includes(d), isPreSprint=d<config.sprintStart, isPostSprint=config.sprintEnd&&d>config.sprintEnd;
               return (
                 <div key={d} style={{width:COL_W,minWidth:COL_W,textAlign:"center",padding:"3px 0",fontSize:9,
-                  color:isHol?T.p2:isToday?T.acc:isPreSprint?T.t3:T.t2,
+                  color:isHol?T.p2:isToday?T.acc:(isPreSprint||isPostSprint)?T.t3:T.t2,
                   fontWeight:isToday?600:400,
-                  background:isHol?T.p2bg:isToday?`${T.acc}10`:isPreSprint?T.bg2:"transparent",
+                  background:isHol?T.p2bg:isToday?`${T.acc}10`:(isPreSprint||isPostSprint)?T.bg2:"transparent",
                   borderRight:`1px solid ${T.b0}`,fontFamily:"'JetBrains Mono',monospace",
-                  borderBottom:isToday?`2px solid ${T.acc}`:isHol?`1px solid ${T.p2}60`:"none",
-                  opacity:isPreSprint?0.6:1,
+                  borderBottom:isToday?`2px solid ${T.acc}`:isHol?`1px solid ${T.p2}60`:isPostSprint?`1px dashed ${T.b2}`:"none",
+                  opacity:(isPreSprint||isPostSprint)?0.6:1,
                 }}>
                   {dt.getDate()}<br/><span style={{fontSize:7,opacity:0.6}}>{dt.toLocaleDateString("en-GB",{month:"short"}).slice(0,3)}</span>
                 </div>
@@ -1513,11 +1514,12 @@ function GanttView({tasks, config, predictions}) {
                       const isL2=(config.calendarEvents||[]).some(e=>e.person===lane.person&&e.type==="l2"&&e.date===d);
                       const isTodayCol=d===today;
                       const isPreSprint=d<config.sprintStart;
+                      const isPostSprint=(config.sprintEnd&&d>config.sprintEnd);
                       let barBg="transparent";
                       if(inBar) barBg=isRel?`${T.p3}50`:hasActualEnd?`${T.acc}40`:`${lane.color}55`;
-                      const cellBase=isPreSprint&&!inBar?T.bg2:inBar?barBg:isHol?T.p2bg:isOff?T.p1bg:isL2?`${T.p2}20`:isTodayCol?`${T.acc}08`:"transparent";
+                      const cellBase=isPreSprint&&!inBar?T.bg2:isPostSprint&&!inBar?T.bg2:inBar?barBg:isHol?T.p2bg:isOff?T.p1bg:isL2?`${T.p2}20`:isTodayCol?`${T.acc}08`:"transparent";
                       return (
-                        <div key={d} style={{width:COL_W,minWidth:COL_W,height:ROW_H,background:cellBase,opacity:isPreSprint&&!inBar?0.7:1,borderLeft:isStart&&inBar?`2px solid ${lane.color}80`:"none",borderRight:isEnd&&inBar?`2px solid ${lane.color}80`:isTodayCol?`1px solid ${T.acc}30`:`1px solid ${T.b0}`,position:"relative"}}>
+                        <div key={d} style={{width:COL_W,minWidth:COL_W,height:ROW_H,background:cellBase,opacity:(isPreSprint||isPostSprint)&&!inBar?0.6:1,borderLeft:isStart&&inBar?`2px solid ${lane.color}80`:"none",borderRight:isEnd&&inBar?`2px solid ${lane.color}80`:isTodayCol?`1px solid ${T.acc}30`:`1px solid ${T.b0}`,position:"relative"}}>
                           {isOff&&inBar&&<div style={{position:"absolute",inset:0,background:`${T.p1}20`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,color:T.p1}}>off</div>}
                           {isHol&&inBar&&<div style={{position:"absolute",inset:0,background:`${T.p2}20`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,color:T.p2}}>h</div>}
                           {isL2&&<div title={`${lane.person} on L2 support — no dev capacity`} style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,fontWeight:700,color:T.p2,opacity:inBar?0.8:0.6,letterSpacing:0.2,pointerEvents:"none"}}>L2</div>}
