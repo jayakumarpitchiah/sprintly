@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import App from "./App.jsx";
+import App from "./AppShell.jsx";
 
 // Polyfill window.storage for non-Claude environments (uses localStorage)
 if (!window.storage) {

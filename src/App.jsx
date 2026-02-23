@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { supabase } from "./supabase.js";
 
 const STORAGE_KEY = "sprintly_v2";
 
@@ -1001,7 +1002,7 @@ function AuthGate({ children }) {
   );
 }
 
-export default function App() {
+export default function App({ projectId, projectName, orgName, user, onBackToProjects, onInvite, onSignOut }) {
   const [tasks, setTasks] = useState(DEFAULT_TASKS);
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [editMode, setEditMode] = useState(false);
@@ -1011,19 +1012,48 @@ export default function App() {
   const [calendarOpen, setCalendarOpen] = useState(false);
 
   useEffect(() => {
+    if (!projectId) return;
     async function load() {
       try {
-        const r = await window.storage.get(STORAGE_KEY);
-        if (r) {
-          const d = JSON.parse(r.value);
-          if (d.tasks) setTasks(d.tasks.map(migrateTask));
-          if (d.config) setConfig(migrateConfig(d.config));
+        // Load config from project row
+        const { data: proj } = await supabase.from("projects")
+          .select("config").eq("id", projectId).single();
+        if (proj?.config) setConfig(migrateConfig({...DEFAULT_CONFIG, ...proj.config}));
+
+        // Load tasks
+        const { data: rows } = await supabase.from("tasks")
+          .select("*").eq("project_id", projectId).order("task_number");
+        if (rows?.length) {
+          setTasks(rows.map(r => migrateTask({
+            id: r.task_number, name: r.name, priority: r.priority,
+            status: r.status, effort: r.effort||{}, owners: r.owners||{},
+            dependsOn: r.depends_on, plannedStart: r.planned_start,
+            actualStart: r.actual_start, actualEnd: r.actual_end,
+            notes: r.notes, _dbId: r.id,
+          })));
         }
-      } catch(e) {}
+
+        // Load calendar events
+        const { data: evs } = await supabase.from("calendar_events")
+          .select("*").eq("project_id", projectId);
+        if (evs?.length) {
+          setConfig(c => ({...c, calendarEvents: evs.map(e=>({
+            person: e.person, date: e.date, type: e.type,
+            taskId: e.task_id, extraDays: e.extra_days, reason: e.reason,
+          }))}));
+        }
+      } catch(e) { console.error("Load error", e); }
       setLoaded(true);
     }
     load();
-  }, []);
+
+    // Real-time sync for tasks
+    const taskSub = supabase.channel(`tasks:${projectId}`)
+      .on("postgres_changes", {event:"*", schema:"public", table:"tasks",
+        filter:`project_id=eq.${projectId}`}, () => load())
+      .subscribe();
+    return () => supabase.removeChannel(taskSub);
+  }, [projectId]);
 
   const tasksRef = useRef(tasks);
   const configRef = useRef(config);
@@ -1031,10 +1061,46 @@ export default function App() {
   useEffect(()=>{configRef.current=config;},[config]);
 
   const save = useCallback(async (nt, nc) => {
+    if (!projectId) return;
     setSaving(true);
-    try { await window.storage.set(STORAGE_KEY, JSON.stringify({tasks:nt,config:nc})); } catch(e){}
+    try {
+      // Save config to project
+      await supabase.from("projects")
+        .update({ config: nc, updated_at: new Date().toISOString() })
+        .eq("id", projectId);
+
+      // Upsert tasks
+      const taskRows = nt.map(t => ({
+        project_id: projectId,
+        task_number: t.id,
+        name: t.name,
+        priority: t.priority,
+        status: t.status,
+        effort: t.effort||{},
+        owners: t.owners||{},
+        depends_on: t.dependsOn||null,
+        planned_start: t.plannedStart||null,
+        actual_start: t.actualStart||null,
+        actual_end: t.actualEnd||null,
+        notes: t.notes||null,
+      }));
+      await supabase.from("tasks").upsert(taskRows,
+        { onConflict:"project_id,task_number", ignoreDuplicates:false });
+
+      // Save calendar events (replace all)
+      await supabase.from("calendar_events").delete().eq("project_id", projectId);
+      if (nc.calendarEvents?.length) {
+        await supabase.from("calendar_events").insert(
+          nc.calendarEvents.map(e=>({
+            project_id: projectId,
+            person: e.person, date: e.date, type: e.type,
+            task_id: e.taskId||null, extra_days: e.extraDays||null, reason: e.reason||null,
+          }))
+        );
+      }
+    } catch(e) { console.error("Save error", e); }
     setTimeout(()=>setSaving(false), 600);
-  },[]);
+  },[projectId]);
 
   // Stamp plannedEnd on tasks that have full effort but no plannedEnd yet.
   // plannedEnd = the first prediction when a task is "ready" — freezes on first lock.
@@ -1096,7 +1162,7 @@ export default function App() {
         .frozen-col{position:sticky;left:0;z-index:5;background:inherit;}
         .frozen-header{position:sticky;top:52px;z-index:20;}
       `}</style>
-      <Header editMode={editMode} setEditMode={setEditMode} view={view} setView={setView} saving={saving} onCalendar={()=>setCalendarOpen(o=>!o)} calendarOpen={calendarOpen} config={config}/>
+      <Header editMode={editMode} setEditMode={setEditMode} view={view} setView={setView} saving={saving} onCalendar={()=>setCalendarOpen(o=>!o)} calendarOpen={calendarOpen} config={config} projectName={projectName} orgName={orgName} onBackToProjects={onBackToProjects} onInvite={onInvite} onSignOut={onSignOut}/>
       <div style={{paddingTop:52}}>
         {view==="dashboard"&&<Dashboard tasks={tasks} config={config} predictions={predictions}/>}
         {view==="gantt"    &&<GanttView tasks={tasks} config={config} predictions={predictions}/>}
@@ -1111,7 +1177,7 @@ export default function App() {
 }
 
 // ─── HEADER ───────────────────────────────────────────────────────────────────
-function Header({editMode,setEditMode,view,setView,saving,onCalendar,calendarOpen,config}) {
+function Header({editMode,setEditMode,view,setView,saving,onCalendar,calendarOpen,config,projectName,orgName,onBackToProjects,onInvite,onSignOut}) {
   const tabs = [
     {id:"dashboard",label:"Overview"},
     {id:"gantt",    label:"Timeline"},
@@ -1121,11 +1187,14 @@ function Header({editMode,setEditMode,view,setView,saving,onCalendar,calendarOpe
   ];
   return (
     <div style={{position:"fixed",top:0,left:0,right:0,height:52,background:T.bg1,borderBottom:`1px solid ${T.b1}`,display:"flex",alignItems:"center",padding:"0 20px",zIndex:100}}>
-      <div style={{display:"flex",alignItems:"center",gap:10,marginRight:28}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginRight:20}}>
+        {onBackToProjects&&<button className="btn" onClick={onBackToProjects} title="Back to projects"
+          style={{background:"transparent",border:`1px solid ${T.b1}`,borderRadius:5,
+          padding:"3px 8px",color:T.t2,fontSize:11,cursor:"pointer"}}>← Projects</button>}
         <div style={{width:24,height:24,background:T.acc,borderRadius:5,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:600,color:"#fff"}}>S</div>
         <div>
-          <div style={{fontSize:12,fontWeight:600,color:T.t0,letterSpacing:-0.2}}>Sprintly</div>
-          <div style={{fontSize:10,color:T.t2}}>{config.sprintStart.slice(5)} – {config.sprintEnd?.slice(5)}, {config.sprintStart.slice(0,4)}</div>
+          <div style={{fontSize:12,fontWeight:600,color:T.t0,letterSpacing:-0.2}}>{projectName||"Sprintly"}</div>
+          <div style={{fontSize:10,color:T.t2}}>{orgName?`${orgName} · `:""}{config.sprintStart?.slice(5)} – {config.sprintEnd?.slice(5)}</div>
         </div>
       </div>
       <div style={{display:"flex",gap:1,flex:1}}>
@@ -1148,6 +1217,14 @@ function Header({editMode,setEditMode,view,setView,saving,onCalendar,calendarOpe
           background:editMode?T.bg3:"transparent",color:editMode?T.acc:T.t2,
           border:`1px solid ${editMode?T.b2:T.b1}`
         }}>{editMode?"✎ Editing":"View only"}</button>
+        {onInvite&&<button className="btn" onClick={onInvite} style={{
+          padding:"5px 12px",borderRadius:5,fontSize:11,
+          background:"transparent",color:T.t2,border:`1px solid ${T.b1}`
+        }}>👥 Invite</button>}
+        {onSignOut&&<button className="btn" onClick={onSignOut} style={{
+          padding:"5px 10px",borderRadius:5,fontSize:11,
+          background:"transparent",color:T.t3,border:`1px solid ${T.b1}`
+        }}>↪ Out</button>}
       </div>
     </div>
   );
