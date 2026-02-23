@@ -1530,7 +1530,7 @@ function GanttView({tasks, config, predictions}) {
 
           {/* ── Project / Feature view ── */}
           {ganttMode==="project" && projectRows.map(({task,segments})=>{
-            const sc=STATUS_COLORS[task.status]||STATUS_COLORS["To Do"];
+            const sc=STATUS_COLOR[task.status]||T.sDo;
             const isReleased=task.status==="Released";
             // find bar extents: min start, max end across segments
             const segStarts=segments.map(s=>s.start).filter(Boolean);
