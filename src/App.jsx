@@ -1510,15 +1510,17 @@ function GanttView({tasks, config, predictions}) {
                       const isStart=di===startIdx, isEnd=di===endIdx;
                       const isHol=config.holidays.includes(d);
                       const isOff=(config.calendarEvents||[]).some(e=>e.person===lane.person&&(e.type==="planned"||e.type==="unplanned")&&e.date===d);
+                      const isL2=(config.calendarEvents||[]).some(e=>e.person===lane.person&&e.type==="l2"&&e.date===d);
                       const isTodayCol=d===today;
                       const isPreSprint=d<config.sprintStart;
                       let barBg="transparent";
                       if(inBar) barBg=isRel?`${T.p3}50`:hasActualEnd?`${T.acc}40`:`${lane.color}55`;
-                      const cellBase=isPreSprint&&!inBar?T.bg2:inBar?barBg:isHol?T.p2bg:isOff?T.p1bg:isTodayCol?`${T.acc}08`:"transparent";
+                      const cellBase=isPreSprint&&!inBar?T.bg2:inBar?barBg:isHol?T.p2bg:isOff?T.p1bg:isL2?`${T.p2}20`:isTodayCol?`${T.acc}08`:"transparent";
                       return (
                         <div key={d} style={{width:COL_W,minWidth:COL_W,height:ROW_H,background:cellBase,opacity:isPreSprint&&!inBar?0.7:1,borderLeft:isStart&&inBar?`2px solid ${lane.color}80`:"none",borderRight:isEnd&&inBar?`2px solid ${lane.color}80`:isTodayCol?`1px solid ${T.acc}30`:`1px solid ${T.b0}`,position:"relative"}}>
                           {isOff&&inBar&&<div style={{position:"absolute",inset:0,background:`${T.p1}20`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,color:T.p1}}>off</div>}
                           {isHol&&inBar&&<div style={{position:"absolute",inset:0,background:`${T.p2}20`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,color:T.p2}}>h</div>}
+                          {isL2&&<div title={`${lane.person} on L2 support — no dev capacity`} style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,fontWeight:700,color:T.p2,opacity:inBar?0.8:0.6,letterSpacing:0.2,pointerEvents:"none"}}>L2</div>}
                         </div>
                       );
                     })}
@@ -1584,7 +1586,7 @@ function GanttView({tasks, config, predictions}) {
         </div>
       </div>
       <div style={{padding:"10px 20px",display:"flex",gap:14,flexWrap:"wrap",borderTop:`1px solid ${T.b1}`,marginTop:8}}>
-        {[[`${T.acc}55`,"Predicted bar"],[`${T.p3}50`,"Released"],[`${T.acc}40`,"Actual end set"],[T.p2,"Holiday"],[T.acc,"Today"],[T.p1,"At risk"]].map(([c,l])=>(
+        {[[`${T.acc}55`,"Predicted bar"],[`${T.p3}50`,"Released"],[`${T.acc}40`,"Actual end set"],[T.p2,"Holiday"],[`${T.p2}20`,"L2 support"],[T.p1bg,"Leave"],[T.acc,"Today"]].map(([c,l])=>(
           <div key={l} style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:T.t2}}>
             <div style={{width:12,height:6,background:c,borderRadius:1,opacity:0.8}}/>{l}
           </div>
