@@ -10,6 +10,7 @@ const T = {
   acc: "#4a6fa5", accL: "#3a5f95",
   p1: "#b85c5c", p1bg: "#fff0f0",
   p2: "#9a7c35", p2bg: "#fffbf0",
+  hol: "#0d9488", holBg: "#f0fdf4",
   p3: "#4a7a5a", p3bg: "#f0fff4",
   sDo:  { bg:"#f8f9fa", text:"#868e96", border:"#e4e6ea" },
   sPlan:{ bg:"#f0f4ff", text:"#5a6fa5", border:"#c0cce8" },
@@ -59,7 +60,7 @@ const TEAM_NAMES = Object.keys(TEAM);
 // dependsOn: [taskId, ...]
 // plannedStart, actualStart, plannedEnd (computed), actualEnd
 
-const PUBLIC_HOLIDAY = "2026-03-20";
+// Holidays are org-specific — add via Team Calendar, no defaults
 // L2_DAYS / KISHORE_L2 moved into config.calendarEvents
 
 // ─── MIGRATE OLD TASK FORMAT → NEW ────────────────────────────────────────────
@@ -122,7 +123,7 @@ function isWeekend(d) { return d.getDay()===0||d.getDay()===6; }
 const DEFAULT_CONFIG = {
   sprintStart: "2026-02-23",
   sprintEnd: "2026-03-31",
-  holidays: [PUBLIC_HOLIDAY],
+  holidays: [],
   // calendarEvents: { person, date (YYYY-MM-DD), type: "l2"|"planned"|"unplanned", reason? }
   // replaces hardcoded L2_DAYS and timeOff arrays
   calendarEvents: [
@@ -1465,12 +1466,12 @@ function GanttView({tasks, config, predictions}) {
               const isToday=d===today, isHol=config.holidays.includes(d), isPreSprint=d<config.sprintStart, isPostSprint=config.sprintEnd&&d>config.sprintEnd, isSprintEndDay=config.sprintEnd&&d===config.sprintEnd;
               return (
                 <div key={d} style={{width:COL_W,minWidth:COL_W,textAlign:"center",padding:"3px 0",fontSize:9,
-                  color:isHol?T.p2:isToday?T.acc:(isPreSprint||isPostSprint)?T.t3:T.t2,
-                  fontWeight:isToday?600:400,
-                  background:isHol?T.p2bg:isToday?`${T.acc}10`:(isPreSprint||isPostSprint)?T.bg2:"transparent",
+                  color:isHol?T.hol:isToday?T.acc:(isPreSprint||isPostSprint)?T.t3:T.t2,
+                  fontWeight:isHol||isToday?600:400,
+                  background:isHol?T.holBg:isToday?`${T.acc}10`:(isPreSprint||isPostSprint)?T.bg2:"transparent",
                   borderRight:isSprintEndDay?`3px solid ${T.p1}`:`1px solid ${T.b0}`,
                   fontFamily:"'JetBrains Mono',monospace",
-                  borderBottom:isToday?`2px solid ${T.acc}`:isHol?`1px solid ${T.p2}60`:isPostSprint?`1px dashed ${T.b2}`:"none",
+                  borderBottom:isToday?`2px solid ${T.acc}`:isHol?`2px solid ${T.hol}`:isPostSprint?`1px dashed ${T.b2}`:"none",
                   opacity:(isPreSprint||isPostSprint)?0.6:1,
                   position:"relative",
                 }}>
@@ -1520,11 +1521,12 @@ function GanttView({tasks, config, predictions}) {
                       const isPostSprint=(config.sprintEnd&&d>config.sprintEnd);
                       let barBg="transparent";
                       if(inBar) barBg=isRel?`${T.p3}50`:hasActualEnd?`${T.acc}40`:`${lane.color}55`;
-                      const cellBase=isPreSprint&&!inBar?T.bg2:isPostSprint&&!inBar?T.bg2:inBar?barBg:isHol?T.p2bg:isOff?T.p1bg:isL2?`${T.p2}20`:isTodayCol?`${T.acc}08`:"transparent";
+                      const holStripe=`repeating-linear-gradient(45deg,${T.hol}18,${T.hol}18 3px,${T.holBg} 3px,${T.holBg} 8px)`;
+                      const cellBase=isPreSprint&&!inBar?T.bg2:isPostSprint&&!inBar?T.bg2:inBar?barBg:isHol?holStripe:isOff?T.p1bg:isL2?`${T.p2}20`:isTodayCol?`${T.acc}08`:"transparent";
                       return (
                         <div key={d} style={{width:COL_W,minWidth:COL_W,height:ROW_H,background:cellBase,opacity:(isPreSprint||isPostSprint)&&!inBar?0.6:1,borderLeft:isStart&&inBar?`2px solid ${lane.color}80`:"none",borderRight:(config.sprintEnd&&d===config.sprintEnd)?`3px solid ${T.p1}`:isEnd&&inBar?`2px solid ${lane.color}80`:isTodayCol?`1px solid ${T.acc}30`:`1px solid ${T.b0}`,position:"relative"}}>
                           {isOff&&inBar&&<div style={{position:"absolute",inset:0,background:`${T.p1}20`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,color:T.p1}}>off</div>}
-                          {isHol&&inBar&&<div style={{position:"absolute",inset:0,background:`${T.p2}20`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,color:T.p2}}>h</div>}
+                          {isHol&&<div style={{position:"absolute",inset:0,background:`${T.hol}15`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:8,color:T.hol,fontWeight:700}}>🎉</div>}
                           {isL2&&!isPostSprint&&<div title={`${lane.person} on L2 support — no dev capacity`} style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,fontWeight:700,color:T.p2,opacity:inBar?0.8:0.6,letterSpacing:0.2,pointerEvents:"none"}}>L2</div>}
                         </div>
                       );
@@ -1564,7 +1566,8 @@ function GanttView({tasks, config, predictions}) {
                     const isPastEnd=(config.sprintEnd&&d>config.sprintEnd);
                     // Check if this day is inside any segment
                     const activeSeg=segments.find(s=>s.start<=d&&s.end>=d);
-                    const cellBg=activeSeg?activeSeg.color+(isReleased?"33":"55"):isHol?T.p2bg:isTodayCol?`${T.acc}08`:isPreSprint?T.bg2:"transparent";
+                    const holStripeProj=`repeating-linear-gradient(45deg,${T.hol}18,${T.hol}18 3px,${T.holBg} 3px,${T.holBg} 8px)`;
+                    const cellBg=activeSeg?activeSeg.color+(isReleased?"33":"55"):isHol?holStripeProj:isTodayCol?`${T.acc}08`:isPreSprint?T.bg2:"transparent";
                     return (
                       <div key={d} title={activeSeg?`${activeSeg.label}: ${activeSeg.person}`:""}
                         style={{width:COL_W,minWidth:COL_W,height:ROW_H,
@@ -1591,7 +1594,7 @@ function GanttView({tasks, config, predictions}) {
         </div>
       </div>
       <div style={{padding:"10px 20px",display:"flex",gap:14,flexWrap:"wrap",borderTop:`1px solid ${T.b1}`,marginTop:8}}>
-        {[[`${T.acc}55`,"Predicted bar"],[`${T.p3}50`,"Released"],[`${T.acc}40`,"Actual end set"],[T.p2,"Holiday"],[`${T.p2}20`,"L2 support"],[T.p1bg,"Leave"],[T.acc,"Today"]].map(([c,l])=>(
+        {[[`${T.acc}55`,"Predicted bar"],[`${T.p3}50`,"Released"],[`${T.acc}40`,"Actual end set"],[T.hol,"Holiday ↗"],[`${T.p2}20`,"L2 support"],[T.p1bg,"Leave"],[T.acc,"Today"]].map(([c,l])=>(
           <div key={l} style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:T.t2}}>
             <div style={{width:12,height:6,background:c,borderRadius:1,opacity:0.8}}/>{l}
           </div>
