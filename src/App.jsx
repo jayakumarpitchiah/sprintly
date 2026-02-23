@@ -66,16 +66,21 @@ const TEAM_NAMES = Object.keys(TEAM);
 
 // ─── MIGRATE OLD TASK FORMAT → NEW ────────────────────────────────────────────
 function migrateTask(t) {
-  if (t.owners) return t; // already new format
-  return {
-    ...t,
-    owners: { ios: t.devOwner||"", and: t.andOwner||"", be: t.beOwner||"", wc: "", qa: t.qaOwner||"" },
-    effort: { ios: Number(t.ios||0), and: Number(t.and||0), be: Number(t.be||0), wc: 0, qa: Number(t.qa||0) },
-    dependsOn: t.dependsOn || [],
-    plannedStart: t.plannedStart || "",
-    actualStart:  t.actualStart  || "",
-    actualEnd:    t.actualEnd    || "",
-  };
+  const base = t.owners
+    ? t
+    : {
+        ...t,
+        owners: { ios: t.devOwner||"", and: t.andOwner||"", be: t.beOwner||"", wc: "", qa: t.qaOwner||"" },
+        effort: { ios: Number(t.ios||0), and: Number(t.and||0), be: Number(t.be||0), wc: 0, qa: Number(t.qa||0) },
+        dependsOn: t.dependsOn || [],
+        plannedStart: t.plannedStart || "",
+        actualStart:  t.actualStart  || "",
+        actualEnd:    t.actualEnd    || "",
+      };
+  // laneStarts: per-lane overrides for plannedStart, actualStart, actualEnd
+  // { ios: { plannedStart:"", actualStart:"", actualEnd:"" }, ... }
+  if (!base.laneStarts) base.laneStarts = {};
+  return base;
 }
 
 const DEFAULT_TASKS = [
@@ -247,16 +252,17 @@ function computePredictions(tasks, config) {
 
       const blocked = buildBlocked(person, config);
 
-      // If actualStart is set — this task is already running, pin to that date
-      // Don't let the sequential pointer push it forward
+      // Per-lane start overrides take priority, fall back to task-level dates
+      const ls = t.laneStarts?.[lane] || {};
+      const laneActualStart  = ls.actualStart  || t.actualStart  || "";
+      const lanePlannedStart = ls.plannedStart || t.plannedStart || "";
+
       let earliest;
-      if (t.actualStart) {
-        earliest = parseDate(t.actualStart);
-      } else if (t.plannedStart) {
-        // Planned start is a hard anchor — respect it even if person's ptr is later
-        earliest = parseDate(t.plannedStart);
+      if (laneActualStart) {
+        earliest = parseDate(laneActualStart);
+      } else if (lanePlannedStart) {
+        earliest = parseDate(lanePlannedStart);
       } else {
-        // Floating task: schedule after person's ptr or sprint start
         earliest = parseDate(config.sprintStart);
         if (personPtr[person] && personPtr[person] > earliest) {
           earliest = new Date(personPtr[person]);
@@ -276,9 +282,10 @@ function computePredictions(tasks, config) {
       let startDay = new Date(earliest);
       while (isWeekend(startDay)||blocked.has(fmtDate(startDay))) startDay=addDays(startDay,1);
 
+      const laneActualEnd = ls.actualEnd || t.actualEnd || "";
       // If task already actualEnd'd, use that as the end
-      if (t.actualEnd && (t.status==="Released"||t.status==="In QA")) {
-        const ae = parseDate(t.actualEnd);
+      if (laneActualEnd && (t.status==="Released"||t.status==="In QA")) {
+        const ae = parseDate(laneActualEnd);
         pred[t.id][lane] = { start:startDay, end:ae };
         if (!personPtr[person]||ae>personPtr[person]) personPtr[person]=new Date(ae);
         return;
@@ -1026,7 +1033,10 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
         if (rows?.length) {
           setTasks(rows.map(r => migrateTask({
             id: r.task_number, name: r.name, priority: r.priority,
-            status: r.status, effort: r.effort||{}, owners: r.owners||{},
+            status: r.status,
+            effort: (({_laneStarts, ...rest}) => rest)(r.effort||{}),
+            owners: r.owners||{},
+            laneStarts: r.effort?._laneStarts||{},
             dependsOn: r.depends_on, plannedStart: r.planned_start,
             actualStart: r.actual_start, actualEnd: r.actual_end,
             notes: r.notes, _dbId: r.id,
@@ -1083,6 +1093,7 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
         actual_start: t.actualStart||null,
         actual_end: t.actualEnd||null,
         notes: t.notes||null,
+        effort: {...(t.effort||{}), _laneStarts: t.laneStarts||{} },
       }));
       await supabase.from("tasks").upsert(taskRows,
         { onConflict:"project_id,task_number", ignoreDuplicates:false });
@@ -1840,8 +1851,14 @@ function TableView({tasks, config, editMode, updateTasks, updateConfig, predicti
               {[["#","id"],["Pri","priority"],["Task","name"]].map(([l,k],i)=>
                 <th key={k} onClick={()=>setSortBy(k===sortBy?"priority":k)} style={{padding:"8px 10px",fontSize:10,color:sortBy===k?T.acc:T.t2,fontWeight:600,textTransform:"uppercase",letterSpacing:1,cursor:"pointer",background:sortBy===k?`${T.acc}12`:T.bg1,whiteSpace:"nowrap",textAlign:"left",borderBottom:`1px solid ${T.b1}`,position:"sticky",top:0,left:i===2?0:undefined,zIndex:i===2?16:undefined}}>{l}{sortBy===k?" ↑":""}</th>
               )}
-              {["iOS","And","BE","WC","QA","iOS Dev","And Dev","BE","WC","QA"].map(h=>(
-                <th key={h+"h"} style={{padding:"8px 8px",fontSize:10,color:T.t2,fontWeight:600,textTransform:"uppercase",letterSpacing:1,background:T.bg1,borderBottom:`1px solid ${T.b1}`,whiteSpace:"nowrap",textAlign:"center",position:"sticky",top:0}}>{h}</th>
+              {[["iOS","#5b8af0"],["And","#7c6af0"],["BE","#5ba8a0"],["WC","#4a8a5a"],["QA","#c8972c"]].map(([h,c])=>(
+                <th key={h+"h"} style={{padding:"8px 8px",fontSize:10,fontWeight:600,textTransform:"uppercase",
+                  letterSpacing:1,background:T.bg1,borderBottom:`1px solid ${T.b1}`,whiteSpace:"nowrap",
+                  textAlign:"center",position:"sticky",top:0,minWidth:110,
+                  borderLeft:`1px solid ${T.b0}`,color:c}}>
+                  {h}
+                  <div style={{fontSize:8,color:T.t3,fontWeight:400,marginTop:1}}>effort · owner · dates</div>
+                </th>
               ))}
               <th style={{padding:"8px 10px",fontSize:10,color:T.t2,fontWeight:600,textTransform:"uppercase",letterSpacing:1,background:T.bg1,borderBottom:`1px solid ${T.b1}`,whiteSpace:"nowrap",position:"sticky",top:0}}>Depends on</th>
               {th("Status","status")}
@@ -1898,33 +1915,76 @@ function TableView({tasks, config, editMode, updateTasks, updateConfig, predicti
                       :<span style={{fontSize:12,color:isAtRisk?T.p1:T.t0,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",display:"block",maxWidth:200}} title={t.name}>{isAtRisk?"⚠ ":""}{t.name}</span>
                     }
                   </td>
-                  {/* Effort cells */}
-                  {["ios","and","be","wc","qa"].map(l=>(
-                    <td key={l} style={{padding:"5px 6px",textAlign:"center",minWidth:44}}>
-                      {editMode
-                        ?<input type="number" min={0} step={0.5} value={t.effort?.[l]||""} onChange={e=>update(t.id,`effort.${l}`,e.target.value)} style={{background:T.bg2,color:T.acc,border:`1px solid ${T.b2}`,borderRadius:4,padding:"2px 4px",fontSize:11,width:44,textAlign:"center",fontFamily:"'JetBrains Mono',monospace"}}/>
-                        :<span style={{fontSize:11,color:t.effort?.[l]?T.acc:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>{t.effort?.[l]||"—"}</span>
+                  {/* Combined lane cells: effort + owner + per-lane dates */}
+                  {["ios","and","be","wc","qa"].map(l=>{
+                    const owner = t.owners?.[l]||"";
+                    const eff   = t.effort?.[l]||0;
+                    const ls    = t.laneStarts?.[l]||{};
+                    const lColor = TEAM[owner]?.bar||T.acc;
+                    const hasWarn = ownerWarnings[l];
+                    const hasLaneDates = ls.plannedStart||ls.actualStart||ls.actualEnd;
+                    const pred_lane = predictions[t.id]?.[l];
+                    const laneEnd = pred_lane?.end ? fmtDate(pred_lane.end).slice(5) : null;
+
+                    const updateLaneStart = (field, val) => updateTasks(prev => prev.map(x =>
+                      x.id !== t.id ? x : {
+                        ...x,
+                        laneStarts: {
+                          ...(x.laneStarts||{}),
+                          [l]: { ...(x.laneStarts?.[l]||{}), [field]: val }
+                        }
                       }
-                    </td>
-                  ))}
-                  {/* Owner cells */}
-                  {["ios","and","be","wc","qa"].map(l=>(
-                    <td key={l+"own"} style={{padding:"5px 6px",minWidth:88}}>
-                      {editMode
-                        ?<select value={t.owners?.[l]||""} onChange={e=>update(t.id,`owners.${l}`,e.target.value)} style={{background:T.bg2,color:T.t0,border:`1px solid ${T.b2}`,borderRadius:4,padding:"2px 5px",fontSize:11,width:"100%"}}>
-                          <option value="">—</option>
-                          {TEAM_NAMES.map(p=><option key={p} value={p}>{p}</option>)}
-                        </select>
-                        :(()=>{
-                          const p=t.owners?.[l];
-                          if(!p) return <span style={{fontSize:11,color:T.t3}}>—</span>;
-                          const color=TEAM[p]?.bar||T.acc;
-                          const hasWarn=ownerWarnings[l];
-                          return <span style={{fontSize:11,color,display:"flex",alignItems:"center",gap:3}}>{p}{hasWarn&&<span title={`Avg +${hasWarn}d slip`} style={{fontSize:9,color:T.p2}}>⚠</span>}</span>;
-                        })()
-                      }
-                    </td>
-                  ))}
+                    ));
+
+                    return (
+                      <td key={l+"lane"} style={{padding:"4px 6px",minWidth:110,verticalAlign:"top",
+                        borderLeft:`1px solid ${T.b0}`,
+                        background: hasLaneDates ? `${lColor}08` : "transparent"
+                      }}>
+                        {/* Row 1: effort input + owner select */}
+                        <div style={{display:"flex",alignItems:"center",gap:3,marginBottom:editMode?3:0}}>
+                          {editMode
+                            ? <>
+                                <input type="number" min={0} step={0.5} value={eff||""} onChange={e=>update(t.id,`effort.${l}`,e.target.value)}
+                                  style={{background:T.bg2,color:T.acc,border:`1px solid ${T.b2}`,borderRadius:3,padding:"1px 3px",fontSize:10,width:32,textAlign:"center",fontFamily:"'JetBrains Mono',monospace"}}/>
+                                <select value={owner} onChange={e=>update(t.id,`owners.${l}`,e.target.value)}
+                                  style={{background:T.bg2,color:T.t0,border:`1px solid ${T.b2}`,borderRadius:3,padding:"1px 3px",fontSize:10,flex:1,minWidth:0}}>
+                                  <option value="">—</option>
+                                  {TEAM_NAMES.map(p=><option key={p} value={p}>{p}</option>)}
+                                </select>
+                              </>
+                            : <>
+                                <span style={{fontSize:10,color:eff?T.acc:T.t3,fontFamily:"'JetBrains Mono',monospace",minWidth:14}}>{eff||"—"}</span>
+                                {owner && <span style={{fontSize:10,color:lColor,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{owner}{hasWarn&&<span title={`Avg +${hasWarn}d slip`} style={{fontSize:8,color:T.p2,marginLeft:2}}>⚠</span>}</span>}
+                                {!owner && <span style={{fontSize:10,color:T.t3}}>—</span>}
+                              </>
+                          }
+                        </div>
+                        {/* Row 2: per-lane date overrides (shown when owner+effort exist) */}
+                        {owner && eff > 0 && editMode && (
+                          <div style={{display:"flex",flexDirection:"column",gap:2,paddingTop:2,borderTop:`1px dashed ${T.b1}`}}>
+                            <input type="date" value={ls.plannedStart||""} onChange={e=>updateLaneStart("plannedStart",e.target.value)}
+                              title="Lane planned start (overrides task start)"
+                              style={{background:"transparent",color:T.t2,border:`1px solid ${T.b1}`,borderRadius:3,padding:"1px 2px",fontSize:9,width:"100%",fontFamily:"'JetBrains Mono',monospace",cursor:"pointer"}}/>
+                            <input type="date" value={ls.actualStart||""} onChange={e=>updateLaneStart("actualStart",e.target.value)}
+                              title="Lane actual start"
+                              style={{background:"transparent",color:T.p3,border:`1px solid ${T.sQA.border}`,borderRadius:3,padding:"1px 2px",fontSize:9,width:"100%",fontFamily:"'JetBrains Mono',monospace",cursor:"pointer"}}/>
+                            <input type="date" value={ls.actualEnd||""} onChange={e=>updateLaneStart("actualEnd",e.target.value)}
+                              title="Lane actual end"
+                              style={{background:ls.actualEnd&&t.plannedEnd&&ls.actualEnd>t.plannedEnd?T.p1bg:"transparent",color:ls.actualEnd?T.p3:T.t3,border:`1px solid ${ls.actualEnd?T.sQA.border:T.b1}`,borderRadius:3,padding:"1px 2px",fontSize:9,width:"100%",fontFamily:"'JetBrains Mono',monospace",cursor:"pointer"}}/>
+                          </div>
+                        )}
+                        {/* Row 2 view mode: show dates if set */}
+                        {owner && eff > 0 && !editMode && (ls.plannedStart||ls.actualStart||laneEnd) && (
+                          <div style={{fontSize:9,color:T.t3,fontFamily:"'JetBrains Mono',monospace",lineHeight:1.6,marginTop:2}}>
+                            {ls.plannedStart && <div title="Planned start">▶ {ls.plannedStart.slice(5)}</div>}
+                            {ls.actualStart  && <div title="Actual start" style={{color:T.p3}}>✓ {ls.actualStart.slice(5)}</div>}
+                            {laneEnd         && <div title="Predicted end" style={{color:T.acc}}>⟶ {laneEnd}</div>}
+                          </div>
+                        )}
+                      </td>
+                    );
+                  })}
                   {/* Depends on */}
                   <td style={{padding:"5px 8px",minWidth:90}}>
                     {editMode
