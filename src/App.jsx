@@ -1143,10 +1143,8 @@ function GanttView({tasks, config, predictions}) {
   // chartDays: earliest actualStart week → latest of (sprintEnd, latest predicted end) + 3 buffer days
   const chartDays = useMemo(()=>{
     // --- left boundary: Monday of earliest actualStart (or sprintStart if none earlier) ---
-    const earliestDate = tasks.reduce((min, t) => {
-      if (!t.actualStart || t.actualStart >= min) return min;
-      return t.actualStart;
-    }, config.sprintStart);
+    const allStarts = [config.sprintStart, ...tasks.map(t=>t.actualStart).filter(Boolean)];
+    const earliestDate = allStarts.reduce((a,b) => a < b ? a : b);
     const ed = parseDate(earliestDate);
     const edDay = ed.getDay();
     const chartStart = addDays(ed, edDay === 0 ? -6 : -(edDay - 1)); // back to Monday
