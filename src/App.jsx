@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { supabase } from "./supabase.js";
+import { supabase, dbGet, dbPost, dbPatch, dbDelete, dbFetch } from "./supabase.js";
 
 const STORAGE_KEY = "sprintly_v2";
 
@@ -1023,13 +1023,12 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
     async function load() {
       try {
         // Load config from project row
-        const { data: proj } = await supabase.from("projects")
-          .select("config").eq("id", projectId).single();
+        const projData = await dbGet("projects", `id=eq.${projectId}&select=config`);
+        const proj = projData?.[0];
         if (proj?.config) setConfig(migrateConfig({...DEFAULT_CONFIG, ...proj.config}));
 
         // Load tasks
-        const { data: rows } = await supabase.from("tasks")
-          .select("*").eq("project_id", projectId).order("task_number");
+        const rows = await dbGet("tasks", `project_id=eq.${projectId}&order=task_number`);
         if (rows?.length) {
           setTasks(rows.map(r => migrateTask({
             id: r.task_number, name: r.name, priority: r.priority,
@@ -1044,8 +1043,7 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
         }
 
         // Load calendar events
-        const { data: evs } = await supabase.from("calendar_events")
-          .select("*").eq("project_id", projectId);
+        const evs = await dbGet("calendar_events", `project_id=eq.${projectId}`);
         if (evs?.length) {
           setConfig(c => ({...c, calendarEvents: evs.map(e=>({
             person: e.person, date: e.date, type: e.type,
@@ -1057,12 +1055,9 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
     }
     load();
 
-    // Real-time sync for tasks
-    const taskSub = supabase.channel(`tasks:${projectId}`)
-      .on("postgres_changes", {event:"*", schema:"public", table:"tasks",
-        filter:`project_id=eq.${projectId}`}, () => load())
-      .subscribe();
-    return () => supabase.removeChannel(taskSub);
+    // Real-time sync — poll every 10s as fallback (avoids lock issues)
+    const interval = setInterval(load, 10000);
+    return () => clearInterval(interval);
   }, [projectId]);
 
   const tasksRef = useRef(tasks);
@@ -1075,9 +1070,8 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
     setSaving(true);
     try {
       // Save config to project
-      await supabase.from("projects")
-        .update({ config: nc, updated_at: new Date().toISOString() })
-        .eq("id", projectId);
+      await dbPatch("projects", `id=eq.${projectId}`,
+        { config: nc, updated_at: new Date().toISOString() });
 
       // Upsert tasks
       const taskRows = nt.map(t => ({
@@ -1086,28 +1080,29 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
         name: t.name,
         priority: t.priority,
         status: t.status,
-        effort: t.effort||{},
+        effort: {...(t.effort||{}), _laneStarts: t.laneStarts||{}},
         owners: t.owners||{},
         depends_on: t.dependsOn||null,
         planned_start: t.plannedStart||null,
         actual_start: t.actualStart||null,
         actual_end: t.actualEnd||null,
         notes: t.notes||null,
-        effort: {...(t.effort||{}), _laneStarts: t.laneStarts||{} },
       }));
-      await supabase.from("tasks").upsert(taskRows,
-        { onConflict:"project_id,task_number", ignoreDuplicates:false });
+      await dbFetch("tasks", {
+        method: "POST",
+        prefer: "resolution=merge-duplicates",
+        headers: { "Prefer": "resolution=merge-duplicates,return=minimal" },
+        body: JSON.stringify(taskRows),
+      });
 
       // Save calendar events (replace all)
-      await supabase.from("calendar_events").delete().eq("project_id", projectId);
+      await dbDelete("calendar_events", `project_id=eq.${projectId}`);
       if (nc.calendarEvents?.length) {
-        await supabase.from("calendar_events").insert(
-          nc.calendarEvents.map(e=>({
-            project_id: projectId,
-            person: e.person, date: e.date, type: e.type,
-            task_id: e.taskId||null, extra_days: e.extraDays||null, reason: e.reason||null,
-          }))
-        );
+        await dbPost("calendar_events", nc.calendarEvents.map(e=>({
+          project_id: projectId,
+          person: e.person, date: e.date, type: e.type,
+          task_id: e.taskId||null, extra_days: e.extraDays||null, reason: e.reason||null,
+        })));
       }
     } catch(e) { console.error("Save error", e); }
     setTimeout(()=>setSaving(false), 600);

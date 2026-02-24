@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { supabase } from "./supabase.js";
+import { supabase, dbGet, dbPost } from "./supabase.js";
 import App from "./App.jsx";
 
 const T = {
@@ -76,13 +76,11 @@ function AuthScreen({ onAuth }) {
         if (e) throw e;
         // Create org + add as admin
         const slug = orgName.toLowerCase().replace(/[^a-z0-9]/g,"-").replace(/-+/g,"-");
-        const { data: org, error: oe } = await supabase.from("orgs")
-          .insert({ name: orgName, slug: `${slug}-${Date.now().toString(36)}` })
-          .select().single();
-        if (oe) throw oe;
-        await supabase.from("org_members").insert({
-          org_id: org.id, user_id: data.user.id, role: "admin"
-        });
+        await dbPost("orgs", { name: orgName, slug: `${slug}-${Date.now().toString(36)}` });
+        const orgs = await dbGet("orgs", `slug=like.${slug}*&order=created_at.desc&limit=1`);
+        const org = orgs?.[0];
+        if (!org) throw new Error("Failed to create org");
+        await dbPost("org_members", { org_id: org.id, user_id: data.user.id, role: "admin" });
         onAuth(data.user, org);
       } else {
         const { data, error: e } = await supabase.auth.signInWithPassword({ email, password });
@@ -151,9 +149,10 @@ function ProjectScreen({ user, org, onSelect, onSignOut }) {
 
   const loadProjects = async () => {
     setLoading(true);
-    const { data } = await supabase.from("projects")
-      .select("*").eq("org_id", org.id).order("created_at",{ascending:false});
-    setProjects(data||[]);
+    try {
+      const data = await dbGet("projects", `org_id=eq.${org.id}&order=created_at.desc`);
+      setProjects(data||[]);
+    } catch(e) { console.error("loadProjects", e); }
     setLoading(false);
   };
 
@@ -165,11 +164,13 @@ function ProjectScreen({ user, org, onSelect, onSignOut }) {
       holidays: [], calendarEvents: [],
       velocity: 1.0,
     };
-    const { data, error: e } = await supabase.from("projects")
-      .insert({ org_id: org.id, name: pName.trim(), description: pDesc.trim(), config, created_by: user.id })
-      .select().single();
-    if (e) { setError(e.message); setSaving(false); return; }
-    onSelect(data);
+    try {
+      const rows = await dbPost("projects",
+        { org_id: org.id, name: pName.trim(), description: pDesc.trim(), config, created_by: user.id });
+      // fetch the created project
+      const created = await dbGet("projects", `org_id=eq.${org.id}&order=created_at.desc&limit=1`);
+      onSelect(created?.[0]);
+    } catch(e) { setError(e.message); setSaving(false); return; }
   };
 
   const cardStyle = {
@@ -372,11 +373,10 @@ export default function AppShell() {
   },[]);
 
   const loadOrg = async (u) => {
-    const { data } = await supabase.from("org_members")
-      .select("orgs(*)")
-      .eq("user_id", u.id)
-      .limit(1).single();
-    if (data?.orgs) setOrg(data.orgs);
+    try {
+      const data = await dbGet("org_members", `user_id=eq.${u.id}&select=orgs(*)&limit=1`);
+      if (data?.[0]?.orgs) setOrg(data[0].orgs);
+    } catch(e) { console.error("loadOrg", e); }
   };
 
   const signOut = async () => {
