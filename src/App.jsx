@@ -1088,7 +1088,9 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
         actual_end: t.actualEnd||null,
         notes: t.notes||null,
       }));
-      await dbUpsert("tasks", taskRows);
+      // Delete existing tasks then reinsert (avoids upsert conflict issues)
+      await dbDelete("tasks", `project_id=eq.${projectId}`);
+      await dbPost("tasks", taskRows);
 
       // Save calendar events (replace all)
       await dbDelete("calendar_events", `project_id=eq.${projectId}`);
