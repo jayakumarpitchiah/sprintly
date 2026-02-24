@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { supabase, dbGet, dbPost, dbPatch, dbDelete, dbFetch } from "./supabase.js";
+import { supabase, dbGet, dbPost, dbUpsert, dbPatch, dbDelete } from "./supabase.js";
 
 const STORAGE_KEY = "sprintly_v2";
 
@@ -1088,12 +1088,7 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
         actual_end: t.actualEnd||null,
         notes: t.notes||null,
       }));
-      await dbFetch("tasks", {
-        method: "POST",
-        prefer: "resolution=merge-duplicates",
-        headers: { "Prefer": "resolution=merge-duplicates,return=minimal" },
-        body: JSON.stringify(taskRows),
-      });
+      await dbUpsert("tasks", taskRows);
 
       // Save calendar events (replace all)
       await dbDelete("calendar_events", `project_id=eq.${projectId}`);
