@@ -1148,7 +1148,7 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
   );
 
   return (
-    <AuthGate>
+    <>
     <div style={{background:T.bg0,minHeight:"100vh",fontFamily:"'Inter','SF Pro Text',system-ui,sans-serif",color:T.t0}}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -1175,7 +1175,7 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
       </div>
       {calendarOpen&&<TeamCalendarPanel config={config} updateConfig={updateConfig} tasks={tasks} onClose={()=>setCalendarOpen(false)}/>}
     </div>
-    </AuthGate>
+    </>
   );
 }
 
