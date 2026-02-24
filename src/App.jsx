@@ -1435,12 +1435,10 @@ function GanttView({tasks, config, predictions}) {
     const csv = rows.map(r =>
       r.map(v => {
         const s = String(v ?? "");
-        return s.includes(",") || s.includes('"') || s.includes("
-")
+        return s.includes(",") || s.includes('"') || s.includes("\n")
           ? `"${s.replace(/"/g, '""')}"` : s;
       }).join(",")
-    ).join("
-");
+    ).join("\n");
 
     // Download
     const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});
