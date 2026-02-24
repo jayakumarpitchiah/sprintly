@@ -1726,7 +1726,7 @@ function TableView({tasks, config, editMode, updateTasks, updateConfig, predicti
       if(t.id!==id) return t;
       if(path.includes(".")) {
         const [k,sk]=path.split(".");
-        return {...t,[k]:{...(t[k]||{}),[sk]:["ios","and","be","wc","qa"].includes(sk)?Number(val)||0:val}};
+        return {...t,[k]:{...(t[k]||{}),[sk]:k==="effort"?Number(val)||0:val}};
       }
       return {...t,[path]:val};
     }));
