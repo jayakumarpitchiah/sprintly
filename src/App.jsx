@@ -1385,6 +1385,73 @@ function GanttView({tasks, config, predictions}) {
   const [ganttMode, setGanttMode] = useState("person");   // "person" | "project"
   const [hideReleased, setHideReleased] = useState(true);
 
+  const exportToCSV = () => {
+    const lanes = ["ios","and","be","wc","qa"];
+    const laneLabels = {ios:"iOS",and:"Android",be:"Backend",wc:"Web/Dashboard",qa:"QA"};
+
+    const rows = [];
+    // Header
+    rows.push([
+      "ID","Task","Priority","Status","Depends On",
+      "iOS Owner","iOS Effort","iOS Plan Start","iOS Pred End","iOS Act Start","iOS Act End",
+      "Android Owner","And Effort","And Plan Start","And Pred End","And Act Start","And Act End",
+      "Backend Owner","BE Effort","BE Plan Start","BE Pred End","BE Act Start","BE Act End",
+      "Web Owner","WC Effort","WC Plan Start","WC Pred End","WC Act Start","WC Act End",
+      "QA Owner","QA Effort","QA Plan Start","QA Pred End","QA Act Start","QA Act End",
+      "Task Plan Start","Task Act Start","Task Act End","Overall Pred End","Notes"
+    ]);
+
+    tasks.forEach(t => {
+      const pred = predictions[t.id] || {};
+      const depNames = (t.dependsOn||[]).map(id => {
+        const dep = tasks.find(x => x.id === id);
+        return dep ? `#${dep.id} ${dep.name}` : `#${id}`;
+      }).join("; ");
+
+      const row = [t.id, t.name, t.priority, t.status, depNames];
+
+      lanes.forEach(l => {
+        const ls = t.laneStarts?.[l] || {};
+        const lp = pred[l];
+        const planStart = ls.plannedStart || t.plannedStart || "";
+        const predEnd   = lp?.end ? fmtDate(lp.end) : "";
+        const actStart  = ls.actualStart  || t.actualStart  || "";
+        const actEnd    = ls.actualEnd    || t.actualEnd    || "";
+        row.push(
+          t.owners?.[l] || "",
+          t.effort?.[l] || 0,
+          planStart, predEnd, actStart, actEnd
+        );
+      });
+
+      // Task-level dates
+      const allEnds = Object.values(pred).map(p => p?.end ? fmtDate(p.end) : "").filter(Boolean);
+      const overallPredEnd = allEnds.length ? allEnds.reduce((a,b) => a > b ? a : b) : "";
+      row.push(t.plannedStart||"", t.actualStart||"", t.actualEnd||"", overallPredEnd, t.notes||"");
+      rows.push(row);
+    });
+
+    // Build CSV string
+    const csv = rows.map(r =>
+      r.map(v => {
+        const s = String(v ?? "");
+        return s.includes(",") || s.includes('"') || s.includes("
+")
+          ? `"${s.replace(/"/g, '""')}"` : s;
+      }).join(",")
+    ).join("
+");
+
+    // Download
+    const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = `sprintly-timeline-${fmtDate(new Date())}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   // Apply hide-released filter
   const visibleTasks = useMemo(()=>
     hideReleased ? tasks.filter(t=>t.status!=="Released") : tasks
@@ -1512,6 +1579,26 @@ function GanttView({tasks, config, predictions}) {
           Hide released
           {releasedCount>0&&<span style={{color:T.t3}}>({releasedCount})</span>}
         </label>
+        {/* Export */}
+        <div style={{marginLeft:"auto",display:"flex",gap:6}}>
+          <button className="btn" onClick={exportToCSV} style={{
+            padding:"5px 12px",fontSize:11,fontWeight:500,borderRadius:5,cursor:"pointer",
+            background:`${T.p3}18`,color:T.p3,border:`1px solid ${T.p3}40`,
+            display:"flex",alignItems:"center",gap:5,
+          }}>
+            ⬇ Export CSV
+          </button>
+          <button className="btn" onClick={()=>{
+            exportToCSV();
+            setTimeout(()=>window.open("https://sheets.google.com/","_blank"),400);
+          }} style={{
+            padding:"5px 12px",fontSize:11,fontWeight:500,borderRadius:5,cursor:"pointer",
+            background:`${T.acc}18`,color:T.acc,border:`1px solid ${T.acc}40`,
+            display:"flex",alignItems:"center",gap:5,
+          }}>
+            ↗ Open in Sheets
+          </button>
+        </div>
       </div>
       <div style={{overflowX:"auto"}}>
         <div style={{minWidth:LABEL_W+chartDays.length*COL_W}}>
