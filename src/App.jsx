@@ -2111,216 +2111,203 @@ function TableView({tasks, config, editMode, updateTasks, updateConfig, predicti
         {configOpen&&editMode&&<ConfigPanel config={config} updateConfig={updateConfig} onClose={()=>setConfigOpen(false)}/>}
       </div>
 
-      {/* Scrollable table */}
-      <div style={{flex:1,overflow:"auto",position:"relative"}}>
-        <table style={{borderCollapse:"collapse",width:"100%",minWidth:1400}}>
-          <thead>
-            <tr style={{position:"sticky",top:0,zIndex:20}}>
-              {editMode&&<th style={{padding:"8px 8px",background:T.bg1,borderBottom:`1px solid ${T.b1}`,width:32,position:"sticky",top:0}}><input type="checkbox" checked={selected.size===sorted.length&&sorted.length>0} onChange={toggleAll} style={{cursor:"pointer",accentColor:T.acc}}/></th>}
-              {[["#","id"],["Pri","priority"],["Task","name"]].map(([l,k],i)=>
-                <th key={k} onClick={()=>setSortBy(k===sortBy?"priority":k)} style={{padding:"8px 10px",fontSize:10,color:sortBy===k?T.acc:T.t2,fontWeight:600,textTransform:"uppercase",letterSpacing:1,cursor:"pointer",background:sortBy===k?`${T.acc}12`:T.bg1,whiteSpace:"nowrap",textAlign:"left",borderBottom:`1px solid ${T.b1}`,position:"sticky",top:0,left:i===2?0:undefined,zIndex:i===2?16:undefined}}>{l}{sortBy===k?" ↑":""}</th>
+      {/* Clean task list */}
+      <div style={{flex:1,overflow:"auto"}}>
+        {/* Column headers */}
+        <div style={{
+          display:"grid",
+          gridTemplateColumns:editMode?"32px 36px 48px 1fr 160px 120px 100px 32px":"36px 48px 1fr 160px 120px 100px",
+          alignItems:"center",
+          padding:"0 16px",
+          height:36,
+          borderBottom:`1px solid ${T.b1}`,
+          background:T.bg1,
+          position:"sticky",top:0,zIndex:10,
+        }}>
+          {editMode&&<div><input type="checkbox" checked={selected.size===sorted.length&&sorted.length>0} onChange={toggleAll} style={{cursor:"pointer",accentColor:T.acc}}/></div>}
+          {[["#","id"],["Pri","priority"]].map(([l,k])=>(
+            <div key={k} onClick={()=>setSortBy(k)} style={{fontSize:10,color:sortBy===k?T.acc:T.t3,fontWeight:600,textTransform:"uppercase",letterSpacing:0.8,cursor:"pointer",userSelect:"none"}}>
+              {l}{sortBy===k?" ↑":""}
+            </div>
+          ))}
+          <div onClick={()=>setSortBy("name")} style={{fontSize:10,color:sortBy==="name"?T.acc:T.t3,fontWeight:600,textTransform:"uppercase",letterSpacing:0.8,cursor:"pointer",userSelect:"none"}}>
+            Task{sortBy==="name"?" ↑":""}
+          </div>
+          <div style={{fontSize:10,color:T.t3,fontWeight:600,textTransform:"uppercase",letterSpacing:0.8}}>Team</div>
+          <div onClick={()=>setSortBy("predictedEnd")} style={{fontSize:10,color:sortBy==="predictedEnd"?T.acc:T.t3,fontWeight:600,textTransform:"uppercase",letterSpacing:0.8,cursor:"pointer",userSelect:"none"}}>
+            Pred End{sortBy==="predictedEnd"?" ↑":""}
+          </div>
+          <div onClick={()=>setSortBy("status")} style={{fontSize:10,color:sortBy==="status"?T.acc:T.t3,fontWeight:600,textTransform:"uppercase",letterSpacing:0.8,cursor:"pointer",userSelect:"none"}}>
+            Status{sortBy==="status"?" ↑":""}
+          </div>
+          {editMode&&<div/>}
+        </div>
+
+        {/* Rows */}
+        {sorted.map((t,ti)=>{
+          const pc  = PRIORITY_COLOR[t.priority]||PRIORITY_COLOR["P3"];
+          const sc  = STATUS_COLOR[t.status]||T.sDo;
+          const isSel = selected.has(t.id);
+          const bg  = isSel ? `${T.acc}12` : "transparent";
+
+          const pe    = taskPredictedEnd(t.id, predictions);
+          const peStr = pe ? fmtDate(pe) : "";
+          const isAtRisk = peStr && peStr > sprintEnd && t.status !== "Released";
+          const isDone   = t.status === "Released" || t.status === "Descoped";
+
+          const slipDays = t.actualEnd && t.plannedEnd
+            ? Math.round((parseDate(t.actualEnd)-parseDate(t.plannedEnd))/86400000) : null;
+
+          // Team avatars: unique owners across lanes
+          const ownerLanes = ["ios","and","be","wc","qa"]
+            .map(l=>({l, owner:t.owners?.[l]||"", eff:Number(t.effort?.[l]||0)}))
+            .filter(x=>x.owner && x.eff>0);
+          const uniqueOwners = [...new Map(ownerLanes.map(x=>[x.owner,x])).values()];
+          const totalEff = ownerLanes.reduce((s,x)=>s+x.eff,0);
+
+          // Velocity warn on any owner
+          const hasVelWarn = ownerLanes.some(({owner})=>
+            owner && velocity[owner]?.count>=2 && velocity[owner]?.avgSlip>2
+          );
+
+          const commentCount = (t.comments||[]).length;
+
+          return (
+            <div
+              key={t.id}
+              onClick={()=> !editMode && onOpenTask && onOpenTask(t.id)}
+              style={{
+                display:"grid",
+                gridTemplateColumns:editMode?"32px 36px 48px 1fr 160px 120px 100px 32px":"36px 48px 1fr 160px 120px 100px",
+                alignItems:"center",
+                padding:"0 16px",
+                minHeight:44,
+                background:bg,
+                borderBottom:`1px solid ${T.b0}`,
+                cursor: editMode ? "default" : "pointer",
+                transition:"background 0.1s",
+                opacity: isDone ? 0.55 : 1,
+              }}
+              onMouseEnter={e=>{ if(!editMode) e.currentTarget.style.background=`${T.acc}08`; }}
+              onMouseLeave={e=>{ e.currentTarget.style.background=bg; }}
+            >
+              {/* Checkbox */}
+              {editMode&&(
+                <div onClick={e=>e.stopPropagation()}>
+                  <input type="checkbox" checked={isSel} onChange={()=>toggleSelect(t.id)} style={{cursor:"pointer",accentColor:T.acc}}/>
+                </div>
               )}
-              {[["iOS","#5b8af0"],["And","#7c6af0"],["BE","#5ba8a0"],["WC","#4a8a5a"],["QA","#c8972c"]].map(([h,c])=>(
-                <th key={h+"h"} style={{padding:"8px 8px",fontSize:10,fontWeight:600,textTransform:"uppercase",
-                  letterSpacing:1,background:T.bg1,borderBottom:`1px solid ${T.b1}`,whiteSpace:"nowrap",
-                  textAlign:"center",position:"sticky",top:0,minWidth:110,
-                  borderLeft:`1px solid ${T.b0}`,color:c}}>
-                  {h}
-                  <div style={{fontSize:8,color:T.t3,fontWeight:400,marginTop:1}}>effort · owner · dates</div>
-                </th>
-              ))}
-              <th style={{padding:"8px 10px",fontSize:10,color:T.t2,fontWeight:600,textTransform:"uppercase",letterSpacing:1,background:T.bg1,borderBottom:`1px solid ${T.b1}`,whiteSpace:"nowrap",position:"sticky",top:0}}>Depends on</th>
-              {th("Status","status")}
-              {[["Plan Start","plannedStart"],["Pred End","predictedEnd"],["Act Start","actualStart"],["Act End","actualEnd"]].map(([h,k])=>(
-                <th key={h} onClick={()=>setSortBy(k===sortBy?"priority":k)} style={{padding:"8px 8px",fontSize:10,color:sortBy===k?T.acc:T.t2,fontWeight:600,textTransform:"uppercase",letterSpacing:1,background:sortBy===k?`${T.acc}12`:T.bg2,borderBottom:`1px solid ${T.b1}`,whiteSpace:"nowrap",borderLeft:`1px solid ${T.b1}`,position:"sticky",top:0,cursor:"pointer",userSelect:"none"}}>{h}{sortBy===k?" ↑":""}</th>
-              ))}
-              <th style={{padding:"8px 8px",fontSize:10,color:T.p2,fontWeight:600,textTransform:"uppercase",letterSpacing:1,background:`${T.p2bg}`,borderBottom:`1px solid ${T.b1}`,whiteSpace:"nowrap",position:"sticky",top:0}}>Slip</th>
-              <th style={{padding:"8px 10px",fontSize:10,color:T.t2,fontWeight:600,textTransform:"uppercase",letterSpacing:1,background:T.bg1,borderBottom:`1px solid ${T.b1}`,position:"sticky",top:0}}>Notes</th>
-              {editMode&&<th style={{background:T.bg1,borderBottom:`1px solid ${T.b1}`,position:"sticky",top:0,width:36}}/>}
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map((t,ti)=>{
-              const pc=PRIORITY_COLOR[t.priority]||PRIORITY_COLOR["P3"];
-              const sc=STATUS_COLOR[t.status]||T.sDo;
-              const isSel=selected.has(t.id);
-              const bg=isSel?T.bg3:ti%2===0?T.bg1:T.bg0;
 
-              // Predicted end
-              const pe=taskPredictedEnd(t.id,predictions);
-              const peStr=pe?fmtDate(pe):"";
-              const isAtRisk=peStr&&peStr>sprintEnd&&t.status!=="Released";
+              {/* ID */}
+              <div style={{fontSize:10,color:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>{t.id}</div>
 
-              // Slip
-              const slipDays=t.actualEnd&&t.plannedEnd?Math.round((parseDate(t.actualEnd)-parseDate(t.plannedEnd))/86400000):null;
+              {/* Priority */}
+              <div onClick={e=>e.stopPropagation()}>
+                {editMode
+                  ? <select value={t.priority} onChange={e=>update(t.id,"priority",e.target.value)}
+                      style={{background:T.bg2,color:T.t0,border:`1px solid ${T.b2}`,borderRadius:4,padding:"2px 4px",fontSize:10,width:40}}>
+                      {["P1","P2","P3"].map(p=><option key={p} value={p}>{p}</option>)}
+                    </select>
+                  : <span className="tag" style={{background:pc.bgCard,color:pc.bg,border:`1px solid ${pc.bg}30`,fontSize:10}}>{t.priority}</span>
+                }
+              </div>
 
-              // Velocity warnings on owners
-              const ownerWarnings={};
-              ["ios","and","be","wc","qa"].forEach(l=>{
-                const p=t.owners?.[l];
-                if(p&&velocity[p]&&velocity[p].count>=2&&velocity[p].avgSlip>2) ownerWarnings[l]=velocity[p].avgSlip;
-              });
+              {/* Task name + meta */}
+              <div style={{minWidth:0, paddingRight:12}}>
+                {editMode
+                  ? <input type="text" value={t.name} onChange={e=>update(t.id,"name",e.target.value)}
+                      onClick={e=>e.stopPropagation()}
+                      style={{background:"transparent",color:T.t0,border:"none",borderBottom:`1px solid ${T.b2}`,
+                        padding:"2px 0",fontSize:13,width:"100%",outline:"none"}}/>
+                  : <div style={{display:"flex",alignItems:"center",gap:6,minWidth:0}}>
+                      {isAtRisk && <span style={{fontSize:10,color:T.p1,flexShrink:0}}>⚠</span>}
+                      <span style={{fontSize:13,color:isDone?T.t3:T.t0,fontWeight:500,
+                        whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",
+                        textDecoration:isDone?"line-through":"none"}}>{t.name}</span>
+                      {(t.dependsOn||[]).length>0 && (
+                        <span style={{fontSize:9,color:T.t3,flexShrink:0,fontFamily:"'JetBrains Mono',monospace"}}>
+                          ← #{(t.dependsOn||[]).join(",")}
+                        </span>
+                      )}
+                      {commentCount>0 && (
+                        <span style={{fontSize:9,color:T.acc,flexShrink:0}}>💬{commentCount}</span>
+                      )}
+                      {t.notes && (
+                        <span style={{fontSize:10,color:T.t3,flexShrink:0}} title={t.notes}>📝</span>
+                      )}
+                    </div>
+                }
+              </div>
 
-              const depNames=(t.dependsOn||[]).map(id=>tasks.find(x=>x.id===id)).filter(Boolean).map(x=>`#${x.id}`).join(", ");
+              {/* Team: owner avatars + effort */}
+              <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"nowrap",overflow:"hidden"}}>
+                {uniqueOwners.slice(0,4).map(({owner})=>{
+                  const color = TEAM[owner]?.bar||T.acc;
+                  const initials = owner.slice(0,2).toUpperCase();
+                  const hasWarn = velocity[owner]?.count>=2 && velocity[owner]?.avgSlip>2;
+                  return (
+                    <div key={owner} title={`${owner}${hasWarn?" ⚠ slow velocity":""}`} style={{
+                      width:22,height:22,borderRadius:"50%",
+                      background:`${color}20`,border:`1.5px solid ${color}60`,
+                      display:"flex",alignItems:"center",justifyContent:"center",
+                      fontSize:8,fontWeight:700,color,flexShrink:0,position:"relative",
+                    }}>
+                      {initials}
+                      {hasWarn&&<span style={{position:"absolute",top:-3,right:-3,fontSize:7,color:T.p2}}>⚠</span>}
+                    </div>
+                  );
+                })}
+                {uniqueOwners.length===0 && <span style={{fontSize:10,color:T.t3}}>—</span>}
+                {totalEff>0 && <span style={{fontSize:10,color:T.t3,fontFamily:"'JetBrains Mono',monospace",marginLeft:2}}>{totalEff}d</span>}
+              </div>
 
-              return (
-                <tr key={t.id} style={{background:bg,borderBottom:`1px solid ${T.b0}`}}>
-                  {editMode&&<td style={{padding:"5px 8px",textAlign:"center"}}><input type="checkbox" checked={isSel} onChange={()=>toggleSelect(t.id)} style={{cursor:"pointer",accentColor:T.acc}}/></td>}
-                  {/* ID */}
-                  <td style={{padding:"5px 8px",fontSize:11,color:T.t2,fontFamily:"'JetBrains Mono',monospace",whiteSpace:"nowrap"}}>{t.id}</td>
-                  {/* Priority */}
-                  <td style={{padding:"5px 8px"}}>
-                    {editMode
-                      ?<select value={t.priority} onChange={e=>update(t.id,"priority",e.target.value)} style={{background:T.bg2,color:T.t0,border:`1px solid ${T.b2}`,borderRadius:4,padding:"2px 4px",fontSize:11}}>
-                        {["P1","P2","P3"].map(p=><option key={p} value={p}>{p}</option>)}
-                      </select>
-                      :<span className="tag" style={{background:pc.bgCard,color:pc.bg,border:`1px solid ${pc.bg}30`}}>{t.priority}</span>
-                    }
-                  </td>
-                  {/* Task name — frozen */}
-                  <td style={{padding:"5px 10px",maxWidth:220,minWidth:160,position:"sticky",left:0,background:bg,zIndex:4,boxShadow:"2px 0 4px rgba(0,0,0,0.04)"}}>
-                    {editMode
-                      ?<input type="text" value={t.name} onChange={e=>update(t.id,"name",e.target.value)} style={{background:"transparent",color:T.t0,border:"none",borderBottom:`1px solid ${T.b2}`,padding:"1px 0",fontSize:12,width:"100%",outline:"none"}}/>
-                      :<button onClick={()=>onOpenTask&&onOpenTask(t.id)} style={{background:"none",border:"none",padding:0,cursor:"pointer",textAlign:"left",width:"100%"}}>
-                        <span style={{fontSize:12,color:isAtRisk?T.p1:T.acc,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",display:"block",maxWidth:200,textDecoration:"none"}} title={t.name}>{isAtRisk?"⚠ ":""}{t.name}</span>
-                      </button>
-                    }
-                  </td>
-                  {/* Combined lane cells: effort + owner + per-lane dates */}
-                  {["ios","and","be","wc","qa"].map(l=>{
-                    const owner = t.owners?.[l]||"";
-                    const eff   = t.effort?.[l]||0;
-                    const ls    = t.laneStarts?.[l]||{};
-                    const lColor = TEAM[owner]?.bar||T.acc;
-                    const hasWarn = ownerWarnings[l];
-                    const hasLaneDates = ls.plannedStart||ls.actualStart||ls.actualEnd;
-                    const pred_lane = predictions[t.id]?.[l];
-                    const laneEnd = pred_lane?.end ? fmtDate(pred_lane.end).slice(5) : null;
+              {/* Predicted end */}
+              <div>
+                <span style={{
+                  fontSize:12,fontFamily:"'JetBrains Mono',monospace",
+                  color:isAtRisk?T.p1:peStr?T.p3:T.t3,
+                  fontWeight:isAtRisk?600:400,
+                }}>
+                  {peStr?peStr.slice(5):"—"}
+                </span>
+                {slipDays!==null&&(
+                  <span style={{fontSize:10,fontFamily:"'JetBrains Mono',monospace",marginLeft:6,
+                    color:slipDays>0?T.p1:slipDays<0?"#3a8a5a":T.t3}}>
+                    {slipDays>0?"+":""}{slipDays}d
+                  </span>
+                )}
+              </div>
 
-                    const updateLaneStart = (field, val) => updateTasks(prev => prev.map(x =>
-                      x.id !== t.id ? x : {
-                        ...x,
-                        laneStarts: {
-                          ...(x.laneStarts||{}),
-                          [l]: { ...(x.laneStarts?.[l]||{}), [field]: val }
-                        }
-                      }
-                    ));
+              {/* Status */}
+              <div onClick={e=>e.stopPropagation()}>
+                {editMode
+                  ? <select value={t.status} onChange={e=>update(t.id,"status",e.target.value)}
+                      style={{background:T.bg2,color:T.t0,border:`1px solid ${T.b2}`,borderRadius:4,
+                        padding:"3px 5px",fontSize:11,width:"100%"}}>
+                      {STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
+                    </select>
+                  : <span className="tag" style={{background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`}}>{t.status}</span>
+                }
+              </div>
 
-                    return (
-                      <td key={l+"lane"} style={{padding:"4px 6px",minWidth:110,verticalAlign:"top",
-                        borderLeft:`1px solid ${T.b0}`,
-                        background: hasLaneDates ? `${lColor}08` : "transparent"
-                      }}>
-                        {/* Row 1: effort input + owner select */}
-                        <div style={{display:"flex",alignItems:"center",gap:3,marginBottom:editMode?3:0}}>
-                          {editMode
-                            ? <>
-                                <input type="number" min={0} step={0.5} value={eff||""} onChange={e=>update(t.id,`effort.${l}`,e.target.value)}
-                                  style={{background:T.bg2,color:T.acc,border:`1px solid ${T.b2}`,borderRadius:3,padding:"1px 3px",fontSize:10,width:32,textAlign:"center",fontFamily:"'JetBrains Mono',monospace"}}/>
-                                <select value={owner} onChange={e=>update(t.id,`owners.${l}`,e.target.value)}
-                                  style={{background:T.bg2,color:T.t0,border:`1px solid ${T.b2}`,borderRadius:3,padding:"1px 3px",fontSize:10,flex:1,minWidth:0}}>
-                                  <option value="">—</option>
-                                  {TEAM_NAMES.map(p=><option key={p} value={p}>{p}</option>)}
-                                </select>
-                              </>
-                            : <>
-                                <span style={{fontSize:10,color:eff?T.acc:T.t3,fontFamily:"'JetBrains Mono',monospace",minWidth:14}}>{eff||"—"}</span>
-                                {owner && <span style={{fontSize:10,color:lColor,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{owner}{hasWarn&&<span title={`Avg +${hasWarn}d slip`} style={{fontSize:8,color:T.p2,marginLeft:2}}>⚠</span>}</span>}
-                                {!owner && <span style={{fontSize:10,color:T.t3}}>—</span>}
-                              </>
-                          }
-                        </div>
-                        {/* Row 2: per-lane date overrides (shown when owner+effort exist) */}
-                        {owner && eff > 0 && editMode && (
-                          <div style={{display:"flex",flexDirection:"column",gap:2,paddingTop:2,borderTop:`1px dashed ${T.b1}`}}>
-                            <input type="date" value={ls.plannedStart||""} onChange={e=>updateLaneStart("plannedStart",e.target.value)}
-                              title="Lane planned start (overrides task start)"
-                              style={{background:"transparent",color:T.t2,border:`1px solid ${T.b1}`,borderRadius:3,padding:"1px 2px",fontSize:9,width:"100%",fontFamily:"'JetBrains Mono',monospace",cursor:"pointer"}}/>
-                            <input type="date" value={ls.actualStart||""} onChange={e=>updateLaneStart("actualStart",e.target.value)}
-                              title="Lane actual start"
-                              style={{background:"transparent",color:T.p3,border:`1px solid ${T.sQA.border}`,borderRadius:3,padding:"1px 2px",fontSize:9,width:"100%",fontFamily:"'JetBrains Mono',monospace",cursor:"pointer"}}/>
-                            <input type="date" value={ls.actualEnd||""} onChange={e=>updateLaneStart("actualEnd",e.target.value)}
-                              title="Lane actual end"
-                              style={{background:ls.actualEnd&&t.plannedEnd&&ls.actualEnd>t.plannedEnd?T.p1bg:"transparent",color:ls.actualEnd?T.p3:T.t3,border:`1px solid ${ls.actualEnd?T.sQA.border:T.b1}`,borderRadius:3,padding:"1px 2px",fontSize:9,width:"100%",fontFamily:"'JetBrains Mono',monospace",cursor:"pointer"}}/>
-                          </div>
-                        )}
-                        {/* Row 2 view mode: show dates if set */}
-                        {owner && eff > 0 && !editMode && (ls.plannedStart||ls.actualStart||laneEnd) && (
-                          <div style={{fontSize:9,color:T.t3,fontFamily:"'JetBrains Mono',monospace",lineHeight:1.6,marginTop:2}}>
-                            {ls.plannedStart && <div title="Planned start">▶ {ls.plannedStart.slice(5)}</div>}
-                            {ls.actualStart  && <div title="Actual start" style={{color:T.p3}}>✓ {ls.actualStart.slice(5)}</div>}
-                            {laneEnd         && <div title="Predicted end" style={{color:T.acc}}>⟶ {laneEnd}</div>}
-                          </div>
-                        )}
-                      </td>
-                    );
-                  })}
-                  {/* Depends on */}
-                  <td style={{padding:"5px 8px",minWidth:90}}>
-                    {editMode
-                      ?<input type="text" value={(t.dependsOn||[]).join(",")} placeholder="e.g. 5,12" onChange={e=>updateTasks(prev=>prev.map(x=>x.id===t.id?{...x,dependsOn:e.target.value.split(",").map(v=>parseInt(v.trim())).filter(n=>!isNaN(n)&&n!==t.id)}:x))} style={{background:T.bg2,color:T.t0,border:`1px solid ${T.b2}`,borderRadius:4,padding:"2px 5px",fontSize:11,width:"100%"}}/>
-                      :<span style={{fontSize:11,color:T.t2,fontFamily:"'JetBrains Mono',monospace"}}>{depNames||"—"}</span>
-                    }
-                  </td>
-                  {/* Status */}
-                  <td style={{padding:"5px 8px",minWidth:100}}>
-                    {editMode
-                      ?<select value={t.status} onChange={e=>update(t.id,"status",e.target.value)} style={{background:T.bg2,color:T.t0,border:`1px solid ${T.b2}`,borderRadius:4,padding:"2px 5px",fontSize:11,width:"100%"}}>
-                        {STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
-                      </select>
-                      :<span className="tag" style={{background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`}}>{t.status}</span>
-                    }
-                  </td>
-                  {/* Date columns */}
-                  {/* Plan Start */}
-                  <td style={{padding:"4px 6px",minWidth:106,borderLeft:`1px solid ${T.b1}`,background:`${T.bg1}`}}>
-                    <input type="date" value={t.plannedStart||""} onChange={e=>update(t.id,"plannedStart",e.target.value)} style={{background:"transparent",color:T.t1,border:`1px solid ${T.b1}`,borderRadius:4,padding:"2px 4px",fontSize:11,width:"100%",cursor:"pointer",fontFamily:"'JetBrains Mono',monospace"}}/>
-                  </td>
-                  {/* Predicted end — read-only computed */}
-                  <td style={{padding:"4px 8px",minWidth:90,borderLeft:`1px solid ${T.b1}`,background:`${T.bg1}`}}>
-                    <span style={{fontSize:11,fontFamily:"'JetBrains Mono',monospace",color:isAtRisk?T.p1:peStr?T.p3:T.t3,fontWeight:isAtRisk?600:400}}>
-                      {peStr?peStr.slice(5):"—"}
-                      {isAtRisk&&<span style={{fontSize:9,marginLeft:3}}>⚠</span>}
-                    </span>
-                  </td>
-                  {/* Act Start */}
-                  <td style={{padding:"4px 6px",minWidth:106,borderLeft:`1px solid ${T.b1}`,background:`${T.p3bg}20`}}>
-                    <input type="date" value={t.actualStart||""} onChange={e=>update(t.id,"actualStart",e.target.value)} style={{background:"transparent",color:T.p3,border:`1px solid ${T.sQA.border}`,borderRadius:4,padding:"2px 4px",fontSize:11,width:"100%",cursor:"pointer",fontFamily:"'JetBrains Mono',monospace"}}/>
-                  </td>
-                  {/* Act End */}
-                  <td style={{padding:"4px 6px",minWidth:106,background:`${T.p3bg}20`}}>
-                    {(()=>{
-                      const isLate=t.actualEnd&&t.plannedEnd&&t.actualEnd>t.plannedEnd;
-                      return <input type="date" value={t.actualEnd||""} onChange={e=>update(t.id,"actualEnd",e.target.value)} style={{background:isLate?T.p1bg:"transparent",color:isLate?T.p1:T.p3,border:`1px solid ${isLate?T.sBlk.border:T.sQA.border}`,borderRadius:4,padding:"2px 4px",fontSize:11,width:"100%",cursor:"pointer",fontFamily:"'JetBrains Mono',monospace"}}/>;
-                    })()}
-                  </td>
-                  {/* Slip */}
-                  <td style={{padding:"5px 8px",background:`${T.p2bg}`,minWidth:60,textAlign:"center"}}>
-                    {slipDays!==null
-                      ?<span style={{fontSize:11,fontWeight:600,fontFamily:"'JetBrains Mono',monospace",color:slipDays>0?T.p1:slipDays<0?"#3a8a5a":T.t3}}>{slipDays>0?"+":""}{slipDays}d</span>
-                      :<span style={{fontSize:11,color:T.t3}}>—</span>
-                    }
-                  </td>
-                  {/* Notes */}
-                  <td style={{padding:"5px 10px",minWidth:120}}>
-                    {editMode
-                      ?<input type="text" value={t.notes||""} onChange={e=>update(t.id,"notes",e.target.value)} style={{background:"transparent",color:T.t1,border:"none",borderBottom:`1px solid ${T.b1}`,padding:"1px 0",fontSize:11,width:"100%",outline:"none"}}/>
-                      :<span style={{fontSize:11,color:T.t2}}>{t.notes||<span style={{color:T.b2}}>—</span>}</span>
-                    }
-                  </td>
-                  {editMode&&(
-                    <td style={{padding:"5px 8px",textAlign:"center"}}>
-                      <button className="btn" onClick={()=>setConfirmDelete(t.id)} style={{padding:"2px 7px",borderRadius:4,background:"transparent",color:T.t3,border:"none",fontSize:13,lineHeight:1}}
-                        onMouseEnter={e=>{e.target.style.color=T.p1;}}
-                        onMouseLeave={e=>{e.target.style.color=T.t3;}}>🗑</button>
-                    </td>
-                  )}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              {/* Delete */}
+              {editMode&&(
+                <div onClick={e=>e.stopPropagation()} style={{textAlign:"center"}}>
+                  <button className="btn" onClick={()=>setConfirmDelete(t.id)}
+                    style={{padding:"3px 6px",borderRadius:4,background:"transparent",color:T.t3,border:"none",fontSize:12}}
+                    onMouseEnter={e=>{e.target.style.color=T.p1;}}
+                    onMouseLeave={e=>{e.target.style.color=T.t3;}}>🗑</button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {sorted.length===0&&(
+          <div style={{padding:"48px 0",textAlign:"center",color:T.t3,fontSize:13,fontStyle:"italic"}}>
+            No tasks match the current filters
+          </div>
+        )}
       </div>
     </div>
   );
