@@ -65,6 +65,7 @@ const T = {
   sDo:  { bg:"#f8f9fa", text:"#868e96", border:"#e4e6ea" },
   sPlan:{ bg:"#f0f4ff", text:"#5a6fa5", border:"#c0cce8" },
   sDev: { bg:"#fffbf0", text:"#9a7c35", border:"#f0e0a0" },
+  sDD:  { bg:"#f0f4ff", text:"#4a5a9a", border:"#a8b8e8" },
   sQA:  { bg:"#f0fff4", text:"#4a7a5a", border:"#a8d8b8" },
   sRel: { bg:"#f0f6ff", text:"#4a6fa5", border:"#b0cce8" },
   sBlk: { bg:"#fff0f0", text:"#b85c5c", border:"#f0b8b8" },
@@ -76,12 +77,13 @@ const PRIORITY_COLOR = {
   P2: { bg: T.p2, bgCard: T.p2bg },
   P3: { bg: T.p3, bgCard: T.p3bg },
 };
-const STATUSES = ["Planned","To Do","In Dev","In QA","Released","Blocked","Descoped"];
+const STATUSES = ["Planned","To Do","In Dev","Dev Done","In QA","Released","Blocked","Descoped"];
 const STATUS_COLOR = {
   "Planned": T.sPlan,
   "To Do":   T.sDo,
-  "In Dev":  T.sDev,
-  "In QA":   T.sQA,
+  "In Dev":   T.sDev,
+  "Dev Done": T.sDD,
+  "In QA":    T.sQA,
   "Released":T.sRel,
   "Blocked": T.sBlk,
   "Descoped": { bg:"#f4f4f4", text:"#adb5bd", border:"#dee2e6" },
@@ -333,7 +335,7 @@ function computePredictions(tasks, config) {
 
       const laneActualEnd = ls.actualEnd || t.actualEnd || "";
       // If task already actualEnd'd, use that as the end
-      if (laneActualEnd && (t.status==="Released"||t.status==="In QA")) {
+      if (laneActualEnd && (t.status==="Released"||t.status==="In QA"||t.status==="Dev Done")) {
         const ae = parseDate(laneActualEnd);
         pred[t.id][lane] = { start:startDay, end:ae };
         if (!personPtr[person]||ae>personPtr[person]) personPtr[person]=new Date(ae);
@@ -1378,7 +1380,7 @@ function Dashboard({tasks, config, predictions}) {
 
     // Find best descope candidate: P2/P3, no actualStart, highest effort
     const descopeCandidate = tasks.filter(t=>
-      t.status!=="Released"&&t.status!=="Descoped"&&t.status!=="In Dev"&&
+      t.status!=="Released"&&t.status!=="Descoped"&&t.status!=="In Dev"&&t.status!=="Dev Done"&&
       t.priority!=="P1"&&!t.actualStart
     ).sort((a,b)=>{
       const ae=Object.values(a.effort||{}).reduce((s,v)=>s+Number(v),0);
@@ -2022,7 +2024,7 @@ function TableView({tasks, config, editMode, updateTasks, updateConfig, predicti
   const grouped = useMemo(()=>{
     if(groupBy==="none") return [{key:"all",label:"",items:sorted}];
     if(groupBy==="status") {
-      const order=["Blocked","In Dev","In QA","Planned","To Do","Released","Descoped"];
+      const order=["Blocked","In Dev","Dev Done","In QA","Planned","To Do","Released","Descoped"];
       const map={};
       sorted.forEach(t=>{ (map[t.status]||(map[t.status]=[])).push(t); });
       return order.filter(s=>map[s]).map(s=>({key:s,label:s,items:map[s]}));
@@ -2071,7 +2073,7 @@ function TableView({tasks, config, editMode, updateTasks, updateConfig, predicti
     const pe=taskPredictedEnd(t.id,predictions); return pe&&fmtDate(pe)>sprintEnd;
   }).length;
 
-  const STATUS_NEXT_MAP = {"Planned":"To Do","To Do":"In Dev","In Dev":"In QA","In QA":"Released"};
+  const STATUS_NEXT_MAP = {"Planned":"To Do","To Do":"In Dev","In Dev":"Dev Done","Dev Done":"In QA","In QA":"Released"};
 
   return (
     <div style={{height:"calc(100vh - 52px)",display:"flex",flexDirection:"column",overflow:"hidden"}} className="fade-in">
@@ -3520,7 +3522,7 @@ function KanbanView({ tasks, updateTasks, predictions, config, onOpenTask }) {
   const [dragOver, setDragOver] = useState(null);
   const sprintEnd = config.sprintEnd||"2026-03-31";
 
-  const COLS = ["Planned","To Do","In Dev","In QA","Released","Blocked","Descoped"];
+  const COLS = ["Planned","To Do","In Dev","Dev Done","In QA","Released","Blocked","Descoped"];
 
   const byStatus = useMemo(()=>{
     const m = {};
@@ -3636,8 +3638,8 @@ function MobileStandupView({ tasks, updateTasks, predictions, config, pushToast 
   const sprintEnd = config.sprintEnd||"2026-03-31";
 
   const STATUS_NEXT = {
-    "Planned": "To Do", "To Do": "In Dev", "In Dev": "In QA",
-    "In QA": "Released", "Blocked": "In Dev", "Descoped": "Planned"
+    "Planned": "To Do", "To Do": "In Dev", "In Dev": "Dev Done",
+    "Dev Done": "In QA", "In QA": "Released", "Blocked": "In Dev", "Descoped": "Planned"
   };
 
   const visible = useMemo(() => {
