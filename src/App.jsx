@@ -90,19 +90,19 @@ const STATUS_COLOR = {
 };
 
 const TEAM = {
-  Hari:     { bar:"#4a6fa5", lane:"#f5f8fc" },
-  Sam:      { bar:"#8a6a3a", lane:"#fdf9f5" },
-  Kevin:    { bar:"#4a7a5a", lane:"#f5fbf7" },
-  Ruby:     { bar:"#7a5a8a", lane:"#f9f5fc" },
-  Karan:    { bar:"#7a7040", lane:"#fbfaf5" },
-  Kishore:  { bar:"#8a4a5a", lane:"#fcf5f7" },
-  Prakash:  { bar:"#3a7a7a", lane:"#f5fbfb" },
-  Raj:      { bar:"#6a5a8a", lane:"#f7f5fb" },
-  Tamil:    { bar:"#8a4a70", lane:"#fcf5f9" },
-  Adithya:  { bar:"#3a7a6a", lane:"#f5fbf9" },
-  Gengu:    { bar:"#5a4a8a", lane:"#f7f5fb" },
-  Shahid:   { bar:"#6a4a8a", lane:"#f8f5fb" },
-  Abhishek: { bar:"#7a5a9a", lane:"#f9f5fc" },
+  Hari:     { bar:"#4a6fa5", lane:"#f5f8fc", func:"iOS" },
+  Sam:      { bar:"#8a6a3a", lane:"#fdf9f5", func:"Android" },
+  Kevin:    { bar:"#4a7a5a", lane:"#f5fbf7", func:"Android" },
+  Ruby:     { bar:"#7a5a8a", lane:"#f9f5fc", func:"Dashboard" },
+  Karan:    { bar:"#7a7040", lane:"#fbfaf5", func:"Dashboard" },
+  Kishore:  { bar:"#8a4a5a", lane:"#fcf5f7", func:"Dashboard", shared:"AI" },
+  Prakash:  { bar:"#3a7a7a", lane:"#f5fbfb", func:"Dashboard" },
+  Raj:      { bar:"#6a5a8a", lane:"#f7f5fb", func:"Dashboard" },
+  Tamil:    { bar:"#8a4a70", lane:"#fcf5f9", func:"Dashboard" },
+  Adithya:  { bar:"#3a7a6a", lane:"#f5fbf9", func:"AI" },
+  Gengu:    { bar:"#5a4a8a", lane:"#f7f5fb", func:"QA" },
+  Shahid:   { bar:"#6a4a8a", lane:"#f8f5fb", func:"QA" },
+  Abhishek: { bar:"#7a5a9a", lane:"#f9f5fc", func:"QA" },
 };
 const TEAM_NAMES = Object.keys(TEAM);
 
@@ -1255,7 +1255,7 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
           {view==="gantt"    &&<GanttView tasks={tasks} config={config} predictions={predictions} onOpenTask={setTaskDrawerTask} updateTasks={updateTasks}/>}
           {view==="kanban"   &&<KanbanView tasks={tasks} updateTasks={updateTasks} predictions={predictions} config={config} onOpenTask={setTaskDrawerTask}/>}
           {view==="table"    &&<TableView tasks={tasks} config={config} editMode={editMode} updateTasks={updateTasks} updateConfig={updateConfig} predictions={predictions} velocity={velocity} cycles={cycles} pushToast={pushToast} onOpenTask={setTaskDrawerTask} focusedTaskIdx={focusedTaskIdx}/>}
-          {view==="capacity" &&<CapacityView tasks={tasks} config={config} predictions={predictions}/>}
+          {view==="capacity" &&<CapacityView tasks={tasks} config={config} updateConfig={updateConfig} predictions={predictions}/>}
           {view==="insights" &&<InsightsView tasks={tasks} config={config} predictions={predictions} velocity={velocity}/>}
           {view==="retro"    &&<RetroView tasks={tasks} config={config} predictions={predictions} velocity={velocity}/>}
         </div>
@@ -2707,74 +2707,385 @@ function ConfigPanel({config, updateConfig, onClose}) {
 }
 
 // ─── CAPACITY VIEW ────────────────────────────────────────────────────────────
-function CapacityView({tasks, config, predictions}) {
-  const sprintStart=config.sprintStart;
-  const sprintEndStr=config.sprintEnd||"2026-03-31";
-  const sprint=parseDate(sprintStart), sprintEnd=parseDate(sprintEndStr);
-  let totalWorkDays=0;
-  let cur=new Date(sprint);
-  while(cur<=sprintEnd){if(!isWeekend(cur)&&!config.holidays.includes(fmtDate(cur)))totalWorkDays++;cur=addDays(cur,1);}
+const FUNC_GROUPS = [
+  { key:"iOS",       label:"iOS",                      color:"#4a6fa5" },
+  { key:"Android",   label:"Android",                  color:"#4a7a5a" },
+  { key:"Dashboard", label:"Dashboard / Web / Backend", color:"#7a7040" },
+  { key:"QA",        label:"QA",                       color:"#5a4a8a" },
+  { key:"AI",        label:"AI",                       color:"#3a7a6a" },
+];
 
-  const allPersons=[...new Set(tasks.flatMap(t=>Object.values(t.owners||{}).filter(Boolean)))];
+function CapacityView({tasks, config, updateConfig, predictions}) {
+  const sprintStart  = config.sprintStart;
+  const sprintEndStr = config.sprintEnd || "2026-03-31";
+  const sprint       = parseDate(sprintStart);
+  const sprintEnd    = parseDate(sprintEndStr);
+  const [selectedPerson, setSelectedPerson] = useState(null);
+  const [addingEvent, setAddingEvent]       = useState(null);
+  const [newDate, setNewDate]               = useState("");
+  const [newReason, setNewReason]           = useState("");
+  const [addHoliday, setAddHoliday]         = useState(false);
+  const [holidayInput, setHolidayInput]     = useState("");
 
-  const personData=allPersons.map(person=>{
-    const l2=buildL2Set(person,config), leave=buildLeaveSet(person,config);
-    const l2Days=[...l2].filter(d=>d>=sprintStart&&d<=sprintEndStr).length;
-    const leaveDays=[...leave].length;
-    const available=totalWorkDays-l2Days-leaveDays;
-    const effort=tasks.reduce((sum,t)=>{
-      if(t.status==="Descoped"||t.status==="Released") return sum;
-      const lanes=["ios","and","be","wc","qa"];
-      return sum+lanes.reduce((s,l)=>t.owners?.[l]===person?s+Number(t.effort?.[l]||0):s,0);
-    },0);
-    const overloaded=effort>available;
-    const pct=available>0?Math.round((effort/available)*100):0;
-    // Predicted free date
-    const myTaskEnds=tasks.filter(t=>Object.values(t.owners||{}).includes(person)&&t.status!=="Released").map(t=>taskPredictedEnd(t.id,predictions)).filter(Boolean);
-    const freeDate=myTaskEnds.length>0?fmtDate(new Date(Math.max(...myTaskEnds.map(d=>d.getTime())))):null;
-    return {person,effort,available,l2Days,leaveDays,overloaded,pct,freeDate};
-  }).sort((a,b)=>b.pct-a.pct);
+  let totalWorkDays = 0;
+  let cur = new Date(sprint);
+  while (cur <= sprintEnd) {
+    if (!isWeekend(cur) && !(config.holidays||[]).includes(fmtDate(cur))) totalWorkDays++;
+    cur = addDays(cur, 1);
+  }
+
+  function getPersonStats(person) {
+    const l2    = buildL2Set(person, config);
+    const leave = buildLeaveSet(person, config);
+    const l2Days    = [...l2].filter(d => d >= sprintStart && d <= sprintEndStr).length;
+    const leaveDays = [...leave].length;
+    const available = Math.max(0, totalWorkDays - l2Days - leaveDays);
+    const effort = tasks.reduce((sum, t) => {
+      if (t.status === "Descoped" || t.status === "Released") return sum;
+      return sum + ["ios","and","be","wc","qa"].reduce((s,l) =>
+        t.owners?.[l] === person ? s + Number(t.effort?.[l]||0) : s, 0);
+    }, 0);
+    const pct = available > 0 ? Math.round((effort / available) * 100) : (effort > 0 ? 100 : 0);
+    const overloaded = effort > available;
+    const myEnds = tasks
+      .filter(t => Object.values(t.owners||{}).includes(person) && t.status !== "Released" && t.status !== "Descoped")
+      .map(t => taskPredictedEnd(t.id, predictions)).filter(Boolean);
+    const freeDate = myEnds.length > 0 ? fmtDate(new Date(Math.max(...myEnds.map(d => d.getTime())))) : null;
+    const myTasks  = tasks.filter(t =>
+      Object.values(t.owners||{}).includes(person) &&
+      !["Released","Descoped"].includes(t.status)
+    );
+    return { person, effort, available, l2Days, leaveDays, pct, overloaded, freeDate, myTasks };
+  }
+
+  const groups = FUNC_GROUPS.map(g => {
+    const members = TEAM_NAMES.filter(p => TEAM[p]?.func === g.key || TEAM[p]?.shared === g.key);
+    return { ...g, members, stats: members.map(getPersonStats) };
+  }).filter(g => g.members.length > 0);
+
+  const allStats   = TEAM_NAMES.map(getPersonStats);
+  const totalEff   = allStats.reduce((s,p) => s + p.effort, 0);
+  const totalAvail = allStats.reduce((s,p) => s + p.available, 0);
+  const overloadedList = allStats.filter(p => p.overloaded);
+
+  const addEvent = () => {
+    if (!newDate || !addingEvent) return;
+    updateConfig(c => ({
+      ...c,
+      calendarEvents: [...(c.calendarEvents||[]), {
+        person: selectedPerson, date: newDate,
+        type: addingEvent.type,
+        reason: newReason || undefined
+      }]
+    }));
+    setNewDate(""); setNewReason(""); setAddingEvent(null);
+  };
+
+  const addHolidayDate = () => {
+    if (!holidayInput) return;
+    const existing = new Set(config.holidays||[]);
+    if (!existing.has(holidayInput)) {
+      updateConfig(c => ({ ...c, holidays: [...(c.holidays||[]), holidayInput].sort() }));
+    }
+    setHolidayInput(""); setAddHoliday(false);
+  };
+
+  const inp = { background:T.bg2, color:T.t0, border:`1px solid ${T.b2}`, borderRadius:5, padding:"5px 9px", fontSize:12, outline:"none" };
+
+  const PersonCard = ({ s, groupColor }) => {
+    const color   = TEAM[s.person]?.bar || groupColor;
+    const utilCol = s.overloaded ? T.p1 : s.pct > 85 ? T.p2 : s.pct > 50 ? T.acc : T.p3;
+    const isShared = TEAM[s.person]?.shared;
+    const isSelected = selectedPerson === s.person;
+    return (
+      <div
+        onClick={() => { setSelectedPerson(isSelected ? null : s.person); setAddingEvent(null); setNewDate(""); setNewReason(""); }}
+        style={{
+          background: isSelected ? `${color}10` : T.bg1,
+          border: `1px solid ${isSelected ? color : s.overloaded ? T.sBlk.border : T.b1}`,
+          borderRadius: 8, padding: "12px 14px", cursor: "pointer", transition: "all 0.15s", position: "relative",
+        }}
+        onMouseEnter={e => { if (!isSelected) e.currentTarget.style.borderColor = color; }}
+        onMouseLeave={e => { if (!isSelected) e.currentTarget.style.borderColor = s.overloaded ? T.sBlk.border : T.b1; }}
+      >
+        {s.overloaded && (
+          <div style={{position:"absolute",top:0,right:0,background:T.sBlk.bg,color:T.p1,
+            fontSize:9,fontWeight:600,padding:"2px 7px",borderRadius:"0 8px 0 5px",
+            border:`1px solid ${T.sBlk.border}`,borderTop:"none",borderRight:"none"}}>overloaded</div>
+        )}
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+          <div style={{width:28,height:28,borderRadius:"50%",background:`${color}20`,border:`2px solid ${color}60`,
+            display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,color,flexShrink:0}}>
+            {s.person.slice(0,2).toUpperCase()}
+          </div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{display:"flex",alignItems:"center",gap:5}}>
+              <span style={{fontSize:12,fontWeight:600,color:T.t0}}>{s.person}</span>
+              {isShared && <span style={{fontSize:9,color:T.t3,background:T.bg2,padding:"1px 5px",borderRadius:3,border:`1px solid ${T.b1}`}}>shared</span>}
+            </div>
+            {s.freeDate && (
+              <div style={{fontSize:10,color:s.freeDate > sprintEndStr ? T.p1 : T.t3,marginTop:1}}>
+                free {s.freeDate.slice(5)}{s.freeDate > sprintEndStr ? " ⚠" : ""}
+              </div>
+            )}
+          </div>
+          <span style={{fontSize:20,fontWeight:700,color:utilCol,fontFamily:"'JetBrains Mono',monospace",lineHeight:1}}>{s.pct}%</span>
+        </div>
+        <div style={{height:3,background:T.b1,borderRadius:2,overflow:"hidden",marginBottom:10}}>
+          <div style={{height:"100%",width:`${Math.min(s.pct,100)}%`,background:utilCol,borderRadius:2,transition:"width 0.3s"}}/>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:5,marginBottom:8}}>
+          {[["Effort",`${s.effort}d`,T.t1],["Avail",`${s.available}d`,T.t1],
+            ["L2",`${s.l2Days}d`,s.l2Days>0?T.p2:T.t3],["Leave",`${s.leaveDays}d`,s.leaveDays>0?T.p2:T.t3]].map(([label,val,col]) => (
+            <div key={label} style={{background:T.bg0,borderRadius:4,padding:"4px 6px",textAlign:"center"}}>
+              <div style={{fontSize:8,color:T.t3,textTransform:"uppercase",letterSpacing:0.4,marginBottom:2}}>{label}</div>
+              <div style={{fontSize:11,color:col,fontWeight:500,fontFamily:"'JetBrains Mono',monospace"}}>{val}</div>
+            </div>
+          ))}
+        </div>
+        {s.myTasks.length > 0 ? (
+          <div style={{paddingTop:8,borderTop:`1px solid ${T.b0}`}}>
+            {s.myTasks.slice(0,3).map(t => {
+              const sc = STATUS_COLOR[t.status]||T.sDo;
+              return (
+                <div key={t.id} style={{display:"flex",alignItems:"center",gap:5,marginBottom:3}}>
+                  <span style={{fontSize:9,color:T.t3,fontFamily:"'JetBrains Mono',monospace",flexShrink:0,width:18}}>#{t.id}</span>
+                  <span style={{fontSize:10,color:T.t1,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name}</span>
+                  <span style={{fontSize:9,padding:"1px 5px",borderRadius:3,background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`,flexShrink:0}}>{t.status}</span>
+                </div>
+              );
+            })}
+            {s.myTasks.length > 3 && <div style={{fontSize:10,color:T.t3,marginTop:2}}>+{s.myTasks.length-3} more</div>}
+          </div>
+        ) : (
+          <div style={{paddingTop:8,borderTop:`1px solid ${T.b0}`,fontSize:10,color:T.t3,fontStyle:"italic"}}>No active tasks</div>
+        )}
+      </div>
+    );
+  };
 
   return (
-    <div style={{padding:"20px 24px"}} className="fade-in">
-      <div style={{marginBottom:16,fontSize:10,color:T.t2,textTransform:"uppercase",letterSpacing:0.8,fontWeight:500}}>Team Capacity · {sprintStart} – {sprintEndStr} · {totalWorkDays} working days</div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:10}}>
-        {personData.map(p=>{
-          const color=TEAM[p.person]?.bar||T.acc;
-          const utilColor=p.overloaded?T.p1:p.pct>80?T.p2:T.p3;
-          return (
-            <div key={p.person} style={{background:T.bg1,border:`1px solid ${p.overloaded?T.sBlk.border:T.b1}`,borderRadius:8,padding:16,position:"relative"}}>
-              {p.overloaded&&<div style={{position:"absolute",top:0,right:0,background:T.sBlk.bg,color:T.p1,fontSize:9,fontWeight:500,padding:"3px 8px",borderRadius:"0 8px 0 5px",border:`1px solid ${T.sBlk.border}`,borderTop:"none",borderRight:"none"}}>overloaded</div>}
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-                <div style={{display:"flex",alignItems:"center",gap:7}}>
-                  <div style={{width:7,height:7,background:color,borderRadius:"50%",opacity:0.8}}/>
-                  <span style={{fontSize:12,fontWeight:500,color:T.t0}}>{p.person}</span>
-                </div>
-                <span style={{fontSize:18,fontWeight:600,color:utilColor,fontFamily:"'JetBrains Mono',monospace"}}>{p.pct}%</span>
-              </div>
-              <div style={{marginBottom:10}}>
-                <div style={{height:3,background:T.b1,borderRadius:2,overflow:"hidden"}}>
-                  <div style={{height:"100%",width:`${Math.min(p.pct,100)}%`,background:utilColor,borderRadius:2,opacity:0.6}}/>
-                </div>
-              </div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5}}>
-                {[["Effort",`${p.effort}d`,T.t1],["Available",`${p.available}d`,T.t1],["L2/Leave",`${p.l2Days+p.leaveDays}d`,T.p2]].map(([l,v,c])=>(
-                  <div key={l} style={{background:T.bg0,borderRadius:4,padding:"5px 7px"}}>
-                    <div style={{fontSize:9,color:T.t3,marginBottom:2,textTransform:"uppercase",letterSpacing:0.4}}>{l}</div>
-                    <div style={{fontSize:12,color:c,fontWeight:500,fontFamily:"'JetBrains Mono',monospace"}}>{v}</div>
-                  </div>
-                ))}
-              </div>
-              {p.freeDate&&(
-                <div style={{marginTop:8,fontSize:10,color:T.t2}}>
-                  Est. free: <span style={{fontFamily:"'JetBrains Mono',monospace",color:p.freeDate>sprintEndStr?T.p1:T.p3,fontWeight:500}}>{p.freeDate}</span>
-                  {p.freeDate>sprintEndStr&&<span style={{color:T.p1}}> ⚠ overrun</span>}
-                </div>
+    <div style={{display:"flex",height:"calc(100vh - 52px)",overflow:"hidden"}} className="fade-in">
+
+      {/* ── Main ── */}
+      <div style={{flex:1,overflow:"auto",padding:"20px 24px"}}>
+
+        {/* Header */}
+        <div style={{display:"flex",alignItems:"flex-start",gap:12,marginBottom:18,flexWrap:"wrap"}}>
+          <div>
+            <div style={{fontSize:10,color:T.t2,textTransform:"uppercase",letterSpacing:0.8,fontWeight:500,marginBottom:4}}>
+              Team Capacity · {sprintStart} – {sprintEndStr} · {totalWorkDays} working days
+            </div>
+            <div style={{display:"flex",gap:14,alignItems:"center",flexWrap:"wrap"}}>
+              <span style={{fontSize:13,color:T.t0}}><span style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:600,color:T.acc}}>{totalEff}d</span> effort</span>
+              <span style={{fontSize:13,color:T.t0}}><span style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:600}}>{totalAvail}d</span> available</span>
+              <span style={{fontSize:13,color:T.t0}}><span style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:600,color:totalEff>totalAvail?T.p1:T.p3}}>{totalAvail>0?Math.round((totalEff/totalAvail)*100):0}%</span> utilised</span>
+              {overloadedList.length > 0 && (
+                <span style={{fontSize:11,color:T.p1,background:T.p1bg,padding:"2px 9px",borderRadius:6,border:`1px solid ${T.sBlk.border}`}}>⚠ {overloadedList.length} overloaded</span>
               )}
+            </div>
+          </div>
+
+          {/* Holidays manager */}
+          <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+            {(config.holidays||[]).map(h => {
+              const dt = parseDate(h);
+              const lbl = dt.toLocaleDateString("en-GB",{day:"numeric",month:"short"});
+              return (
+                <span key={h} style={{fontSize:10,padding:"3px 8px",borderRadius:5,background:T.holBg,color:T.hol,border:`1px solid ${T.hol}40`,display:"flex",alignItems:"center",gap:5}}>
+                  🎉 {lbl}
+                  <button onClick={()=>updateConfig(c=>({...c,holidays:(c.holidays||[]).filter(x=>x!==h)}))}
+                    style={{background:"none",border:"none",color:T.t3,cursor:"pointer",fontSize:11,padding:0,lineHeight:1}}>×</button>
+                </span>
+              );
+            })}
+            {addHoliday ? (
+              <div style={{display:"flex",gap:5,alignItems:"center"}}>
+                <input type="date" value={holidayInput} onChange={e=>setHolidayInput(e.target.value)} style={{...inp,fontSize:11,padding:"3px 8px"}}/>
+                <button className="btn" onClick={addHolidayDate} style={{padding:"3px 10px",borderRadius:5,fontSize:11,background:T.hol,color:"#fff",border:"none",cursor:"pointer"}}>Add</button>
+                <button className="btn" onClick={()=>{setAddHoliday(false);setHolidayInput("");}} style={{padding:"3px 7px",borderRadius:5,fontSize:11,background:"transparent",color:T.t3,border:`1px solid ${T.b1}`}}>✕</button>
+              </div>
+            ) : (
+              <button className="btn" onClick={()=>setAddHoliday(true)} style={{padding:"4px 11px",borderRadius:5,fontSize:11,background:T.bg2,color:T.t2,border:`1px solid ${T.b1}`,cursor:"pointer"}}>🎉 + Holiday</button>
+            )}
+          </div>
+        </div>
+
+        {/* Function groups */}
+        {groups.map(g => {
+          const groupEff   = g.stats.reduce((s,p) => s + p.effort, 0);
+          const groupAvail = g.stats.reduce((s,p) => s + p.available, 0);
+          const groupPct   = groupAvail > 0 ? Math.round((groupEff/groupAvail)*100) : 0;
+          const groupOver  = g.stats.filter(p => p.overloaded).length;
+          const utilCol    = groupOver > 0 ? T.p1 : groupPct > 85 ? T.p2 : groupPct > 50 ? T.acc : T.p3;
+          return (
+            <div key={g.key} style={{marginBottom:24}}>
+              <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+                <div style={{width:3,height:16,background:g.color,borderRadius:2,flexShrink:0}}/>
+                <span style={{fontSize:11,fontWeight:700,color:T.t1,textTransform:"uppercase",letterSpacing:0.8}}>{g.label}</span>
+                <span style={{fontSize:10,color:T.t3}}>{g.members.length} {g.members.length===1?"person":"people"}</span>
+                <div style={{flex:1,height:1,background:T.b1}}/>
+                <span style={{fontSize:11,fontFamily:"'JetBrains Mono',monospace",color:utilCol,fontWeight:600}}>{groupEff}d / {groupAvail}d</span>
+                <div style={{width:56,height:3,background:T.b1,borderRadius:2,overflow:"hidden"}}>
+                  <div style={{height:"100%",width:`${Math.min(groupPct,100)}%`,background:utilCol,borderRadius:2}}/>
+                </div>
+                <span style={{fontSize:11,color:utilCol,fontFamily:"'JetBrains Mono',monospace",fontWeight:700,minWidth:36,textAlign:"right"}}>{groupPct}%</span>
+                {groupOver > 0 && <span style={{fontSize:9,color:T.p1,background:T.p1bg,padding:"1px 6px",borderRadius:4,border:`1px solid ${T.sBlk.border}`}}>⚠ {groupOver}</span>}
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(250px,1fr))",gap:8}}>
+                {g.stats.map(s => <PersonCard key={s.person} s={s} groupColor={g.color}/>)}
+              </div>
             </div>
           );
         })}
       </div>
+
+      {/* ── Person detail panel ── */}
+      {selectedPerson && (() => {
+        const s     = getPersonStats(selectedPerson);
+        const color = TEAM[selectedPerson]?.bar || T.acc;
+        const allEvents  = (config.calendarEvents||[]).filter(e => e.person === selectedPerson && e.date >= sprintStart && e.date <= sprintEndStr);
+        const l2Evts     = allEvents.filter(e => e.type === "l2");
+        const leaveEvts  = allEvents.filter(e => e.type === "planned" || e.type === "unplanned");
+
+        const removeEvent = (evt) => {
+          updateConfig(c => ({
+            ...c,
+            calendarEvents: c.calendarEvents.filter(e =>
+              !(e.person===evt.person && e.date===evt.date && e.type===evt.type && e.reason===evt.reason)
+            )
+          }));
+        };
+
+        const EventChip = ({evt}) => (
+          <div style={{display:"flex",alignItems:"center",gap:6,padding:"5px 8px",borderRadius:5,marginBottom:4,
+            background:evt.type==="l2"?`${T.p2}12`:T.p1bg,
+            border:`1px solid ${evt.type==="l2"?`${T.p2}40`:T.sBlk.border}`}}>
+            <span style={{fontSize:11,fontFamily:"'JetBrains Mono',monospace",color:evt.type==="l2"?T.p2:T.p1,fontWeight:600,minWidth:48}}>{evt.date.slice(5)}</span>
+            <span style={{fontSize:10,color:T.t2,flex:1}}>{evt.type==="l2"?"L2 duty":evt.reason||evt.type}</span>
+            <button onClick={()=>removeEvent(evt)}
+              style={{background:"none",border:"none",color:T.t3,cursor:"pointer",fontSize:13,lineHeight:1,padding:"0 2px"}}
+              onMouseEnter={e=>e.target.style.color=T.p1} onMouseLeave={e=>e.target.style.color=T.t3}>×</button>
+          </div>
+        );
+
+        return (
+          <div style={{width:300,background:T.bg1,borderLeft:`1px solid ${T.b1}`,display:"flex",flexDirection:"column",overflow:"hidden",flexShrink:0}}>
+            {/* Panel header */}
+            <div style={{padding:"14px 16px",borderBottom:`1px solid ${T.b1}`,background:T.bg0,flexShrink:0}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+                <div style={{width:34,height:34,borderRadius:"50%",background:`${color}20`,border:`2px solid ${color}60`,
+                  display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,color}}>
+                  {selectedPerson.slice(0,2).toUpperCase()}
+                </div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:600,color:T.t0}}>{selectedPerson}</div>
+                  <div style={{fontSize:10,color:T.t3}}>
+                    {TEAM[selectedPerson]?.func}{TEAM[selectedPerson]?.shared ? ` · ${TEAM[selectedPerson].shared}` : ""}
+                    {TEAM[selectedPerson]?.shared ? <span style={{marginLeft:5,fontSize:9,background:T.bg2,padding:"1px 5px",borderRadius:3,border:`1px solid ${T.b1}`,color:T.t3}}>shared</span> : ""}
+                  </div>
+                </div>
+                <button onClick={()=>{setSelectedPerson(null);setAddingEvent(null);}}
+                  style={{background:"transparent",border:`1px solid ${T.b1}`,borderRadius:4,color:T.t2,fontSize:14,cursor:"pointer",padding:"2px 8px",lineHeight:1}}>×</button>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5}}>
+                {[["Effort",`${s.effort}d`,s.overloaded?T.p1:T.t0],["Available",`${s.available}d`,T.t0],
+                  ["L2 days",`${s.l2Days}d`,s.l2Days>0?T.p2:T.t3],["Leave",`${s.leaveDays}d`,s.leaveDays>0?T.p2:T.t3]].map(([l,v,c])=>(
+                  <div key={l} style={{background:T.bg1,border:`1px solid ${T.b1}`,borderRadius:5,padding:"6px 8px"}}>
+                    <div style={{fontSize:9,color:T.t3,textTransform:"uppercase",letterSpacing:0.4,marginBottom:2}}>{l}</div>
+                    <div style={{fontSize:13,fontWeight:600,color:c,fontFamily:"'JetBrains Mono',monospace"}}>{v}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div style={{flex:1,overflow:"auto",padding:"14px 16px"}}>
+
+              {/* L2 */}
+              <div style={{marginBottom:16}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:7}}>
+                  <span style={{fontSize:10,fontWeight:600,color:T.t2,textTransform:"uppercase",letterSpacing:0.5}}>L2 Duty</span>
+                  <button className="btn" onClick={()=>setAddingEvent(addingEvent?.type==="l2"?null:{type:"l2"})}
+                    style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:addingEvent?.type==="l2"?`${T.p2}20`:T.bg2,color:addingEvent?.type==="l2"?T.p2:T.t2,border:`1px solid ${addingEvent?.type==="l2"?T.p2:T.b1}`,cursor:"pointer"}}>
+                    {addingEvent?.type==="l2"?"cancel":"+ Add"}
+                  </button>
+                </div>
+                {addingEvent?.type==="l2" && (
+                  <div style={{display:"flex",gap:5,marginBottom:8,alignItems:"center"}}>
+                    <input type="date" value={newDate} onChange={e=>setNewDate(e.target.value)} min={sprintStart} max={sprintEndStr} style={{...inp,flex:1,fontSize:11,padding:"4px 7px"}}/>
+                    <button className="btn" onClick={addEvent} disabled={!newDate}
+                      style={{padding:"4px 10px",borderRadius:4,fontSize:11,background:newDate?T.p2:"#aaa",color:"#fff",border:"none",cursor:newDate?"pointer":"default"}}>Add</button>
+                  </div>
+                )}
+                {l2Evts.length === 0
+                  ? <div style={{fontSize:11,color:T.t3,fontStyle:"italic"}}>No L2 days this sprint</div>
+                  : l2Evts.map((e,i) => <EventChip key={i} evt={e}/>)
+                }
+              </div>
+
+              {/* Leave */}
+              <div style={{marginBottom:16}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:7}}>
+                  <span style={{fontSize:10,fontWeight:600,color:T.t2,textTransform:"uppercase",letterSpacing:0.5}}>Leave</span>
+                  <div style={{display:"flex",gap:4}}>
+                    <button className="btn" onClick={()=>setAddingEvent(addingEvent?.type==="planned"?null:{type:"planned"})}
+                      style={{fontSize:10,padding:"2px 7px",borderRadius:4,cursor:"pointer",
+                        background:addingEvent?.type==="planned"?`${T.p3}20`:T.bg2,
+                        color:addingEvent?.type==="planned"?T.p3:T.t2,
+                        border:`1px solid ${addingEvent?.type==="planned"?T.p3:T.b1}`}}>Planned</button>
+                    <button className="btn" onClick={()=>setAddingEvent(addingEvent?.type==="unplanned"?null:{type:"unplanned"})}
+                      style={{fontSize:10,padding:"2px 7px",borderRadius:4,cursor:"pointer",
+                        background:addingEvent?.type==="unplanned"?`${T.p1}15`:T.bg2,
+                        color:addingEvent?.type==="unplanned"?T.p1:T.t2,
+                        border:`1px solid ${addingEvent?.type==="unplanned"?T.p1:T.b1}`}}>Unplanned</button>
+                  </div>
+                </div>
+                {(addingEvent?.type==="planned"||addingEvent?.type==="unplanned") && (
+                  <div style={{marginBottom:8}}>
+                    <div style={{display:"flex",gap:5,marginBottom:5,alignItems:"center"}}>
+                      <input type="date" value={newDate} onChange={e=>setNewDate(e.target.value)} min={sprintStart} max={sprintEndStr} style={{...inp,flex:1,fontSize:11,padding:"4px 7px"}}/>
+                      <button className="btn" onClick={addEvent} disabled={!newDate}
+                        style={{padding:"4px 10px",borderRadius:4,fontSize:11,background:newDate?T.acc:"#aaa",color:"#fff",border:"none",cursor:newDate?"pointer":"default"}}>Add</button>
+                    </div>
+                    <input type="text" value={newReason} onChange={e=>setNewReason(e.target.value)} placeholder="Reason (optional)"
+                      style={{...inp,width:"100%",fontSize:11,padding:"4px 7px",boxSizing:"border-box"}}/>
+                  </div>
+                )}
+                {leaveEvts.length === 0
+                  ? <div style={{fontSize:11,color:T.t3,fontStyle:"italic"}}>No leave this sprint</div>
+                  : leaveEvts.map((e,i) => <EventChip key={i} evt={e}/>)
+                }
+              </div>
+
+              {/* Active tasks */}
+              <div>
+                <div style={{fontSize:10,fontWeight:600,color:T.t2,textTransform:"uppercase",letterSpacing:0.5,marginBottom:7}}>
+                  Active tasks ({s.myTasks.length})
+                </div>
+                {s.myTasks.length === 0
+                  ? <div style={{fontSize:11,color:T.t3,fontStyle:"italic"}}>No active tasks</div>
+                  : s.myTasks.map(t => {
+                    const sc = STATUS_COLOR[t.status]||T.sDo;
+                    const myEff = ["ios","and","be","wc","qa"].reduce((sum,l) => t.owners?.[l]===selectedPerson ? sum+Number(t.effort?.[l]||0) : sum, 0);
+                    return (
+                      <div key={t.id} style={{padding:"7px 0",borderBottom:`1px solid ${T.b0}`}}>
+                        <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:3}}>
+                          <span style={{fontSize:10,color:T.t3,fontFamily:"'JetBrains Mono',monospace",flexShrink:0}}>#{t.id}</span>
+                          <span style={{fontSize:11,color:T.t0,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name}</span>
+                        </div>
+                        <div style={{display:"flex",gap:5,alignItems:"center"}}>
+                          <span style={{fontSize:9,padding:"1px 5px",borderRadius:3,background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`}}>{t.status}</span>
+                          <span style={{fontSize:9,color:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>{myEff}d effort</span>
+                        </div>
+                      </div>
+                    );
+                  })
+                }
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
