@@ -1152,6 +1152,7 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
           task_id: e.taskId||null, extra_days: e.extraDays||null, reason: e.reason||null,
         })));
       }
+      pushToast("Saved", "success", 1800);
     } catch(e) { console.error("Save error", e); pushToast("Save failed — check your connection and retry", "error", 5000); }
     setTimeout(()=>setSaving(false), 600);
   },[projectId, pushToast]);
@@ -1205,9 +1206,10 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
     "c": () => { if(view==="table") { setView("table"); setEditMode(true); /* trigger drawer via event */ window.dispatchEvent(new CustomEvent("sprintly:addtask")); } },
     "1": () => setView("dashboard"),
     "2": () => setView("gantt"),
-    "3": () => setView("table"),
-    "4": () => setView("capacity"),
-    "5": () => setView("insights"),
+    "3": () => setView("kanban"),
+    "4": () => setView("table"),
+    "5": () => setView("capacity"),
+    "6": () => setView("insights"),
     "?": () => window.dispatchEvent(new CustomEvent("sprintly:shortcuts")),
   });
 
@@ -1247,7 +1249,8 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
         {/* Desktop views */}
         <div className="desktop-only">
           {view==="dashboard"&&<Dashboard tasks={tasks} config={config} predictions={predictions}/>}
-          {view==="gantt"    &&<GanttView tasks={tasks} config={config} predictions={predictions} onOpenTask={setTaskDrawerTask}/>}
+          {view==="gantt"    &&<GanttView tasks={tasks} config={config} predictions={predictions} onOpenTask={setTaskDrawerTask} updateTasks={updateTasks}/>}
+          {view==="kanban"   &&<KanbanView tasks={tasks} updateTasks={updateTasks} predictions={predictions} config={config} onOpenTask={setTaskDrawerTask}/>}
           {view==="table"    &&<TableView tasks={tasks} config={config} editMode={editMode} updateTasks={updateTasks} updateConfig={updateConfig} predictions={predictions} velocity={velocity} cycles={cycles} pushToast={pushToast} onOpenTask={setTaskDrawerTask} focusedTaskIdx={focusedTaskIdx}/>}
           {view==="capacity" &&<CapacityView tasks={tasks} config={config} predictions={predictions}/>}
           {view==="insights" &&<InsightsView tasks={tasks} config={config} predictions={predictions} velocity={velocity}/>}
@@ -1268,6 +1271,7 @@ function Header({editMode,setEditMode,view,setView,saving,onCalendar,calendarOpe
   const tabs = [
     {id:"dashboard",label:"Overview"},
     {id:"gantt",    label:"Timeline"},
+    {id:"kanban",   label:"Kanban"},
     {id:"table",    label:"Tasks"},
     {id:"capacity", label:"Capacity"},
     {id:"insights", label:"Insights"},
@@ -1530,10 +1534,12 @@ function Dashboard({tasks, config, predictions}) {
 }
 
 // ─── GANTT VIEW ───────────────────────────────────────────────────────────────
-function GanttView({tasks, config, predictions, onOpenTask}) {
+function GanttView({tasks, config, predictions, onOpenTask, updateTasks}) {
   const today = fmtDate(new Date());
   const [ganttMode, setGanttMode] = useState("person");   // "person" | "project"
   const [hideReleased, setHideReleased] = useState(true);
+  const [dragInfo, setDragInfo] = useState(null); // { taskId, startColIdx, origPlannedStart }
+  const [dragOverCol, setDragOverCol] = useState(null);
 
   const exportToCSV = () => {
     const lanes = ["ios","and","be","wc","qa"];
@@ -1865,14 +1871,21 @@ function GanttView({tasks, config, predictions, onOpenTask}) {
             const barEnd=segEnds.length?segEnds.reduce((a,b)=>a>b?a:b):null;
             const startIdx=barStart?chartDays.indexOf(barStart):-1;
             const endIdx=barEnd?chartDays.indexOf(barEnd):-1;
+            const isDragTarget=dragInfo?.taskId===task.id;
+            // Compute drag preview: offset startIdx by delta
+            const dragDelta = dragOverCol !== null && dragInfo?.taskId===task.id
+              ? dragOverCol - dragInfo.startColIdx : 0;
+            const previewStartIdx = isDragTarget && startIdx!==-1 ? Math.max(0,startIdx+dragDelta) : startIdx;
+            const previewEndIdx   = isDragTarget && endIdx!==-1   ? Math.max(0,endIdx+dragDelta)   : endIdx;
             return (
-              <div key={task.id} style={{display:"flex",alignItems:"center",borderBottom:`1px solid ${T.b0}`,background:isReleased?T.bg1:T.bg0,opacity:isReleased?0.6:1}}>
+              <div key={task.id} style={{display:"flex",alignItems:"center",borderBottom:`1px solid ${T.b0}`,background:isDragTarget?`${T.acc}05`:isReleased?T.bg1:T.bg0,opacity:isReleased?0.6:1}}>
                 {/* Label */}
                 <div style={{width:LABEL_W,minWidth:LABEL_W,padding:"4px 14px",display:"flex",alignItems:"center",gap:7,overflow:"hidden"}}>
                   <span className="tag" style={{background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`,flexShrink:0,fontSize:9}}>#{task.id}</span>
                   <span style={{fontSize:11,color:isReleased?T.t3:T.t0,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",fontWeight:isReleased?400:500}}>
                     {isReleased?"✓ ":""}{task.name}
                   </span>
+                  {!isReleased&&updateTasks&&<span title="Drag bar to reschedule" style={{fontSize:9,color:T.t3,cursor:"default",marginLeft:"auto"}}>⇄</span>}
                 </div>
                 {/* Bar cells */}
                 <div style={{display:"flex",position:"relative",height:ROW_H}}>
@@ -1881,26 +1894,52 @@ function GanttView({tasks, config, predictions, onOpenTask}) {
                     const isTodayCol=d===today;
                     const isPreSprint=d<config.sprintStart;
                     const isPastEnd=(config.sprintEnd&&d>config.sprintEnd);
-                    // Check if this day is inside any segment
+                    // Use preview indices for drag feedback
+                    const inPreviewBar=previewStartIdx!==-1&&di>=previewStartIdx&&di<=previewEndIdx;
                     const activeSeg=segments.find(s=>s.start<=d&&s.end>=d);
                     const holStripeProj=`repeating-linear-gradient(45deg,${T.hol}18,${T.hol}18 3px,${T.holBg} 3px,${T.holBg} 8px)`;
-                    const cellBg=activeSeg?activeSeg.color+(isReleased?"33":"55"):isHol?holStripeProj:isTodayCol?`${T.acc}08`:isPreSprint?T.bg2:"transparent";
+                    const inBar=startIdx!==-1&&di>=startIdx&&di<=endIdx;
+                    const showBar=isDragTarget?inPreviewBar:inBar;
+                    const cellBg=showBar?(activeSeg?activeSeg.color+(isDragTarget?"66":"55"):T.acc+(isDragTarget?"66":"55"))
+                      :isHol?holStripeProj:isTodayCol?`${T.acc}08`:isPreSprint?T.bg2:"transparent";
                     return (
-                      <div key={d} title={activeSeg?`${activeSeg.label}: ${activeSeg.person}`:""}
+                      <div key={d} title={activeSeg?`${activeSeg.label}: ${activeSeg.person}`:isDragTarget&&showBar?"dragging…":""}
+                        draggable={!isReleased&&updateTasks&&(inBar)}
+                        onDragStart={e=>{
+                          if(isReleased||!updateTasks||!inBar) return;
+                          setDragInfo({taskId:task.id,startColIdx:di,origPlannedStart:task.plannedStart});
+                          setDragOverCol(di);
+                          e.dataTransfer.effectAllowed="move";
+                        }}
+                        onDragOver={e=>{e.preventDefault();if(dragInfo?.taskId===task.id)setDragOverCol(di);}}
+                        onDrop={e=>{
+                          e.preventDefault();
+                          if(!dragInfo||dragInfo.taskId!==task.id||dragDelta===0||!updateTasks) { setDragInfo(null);setDragOverCol(null);return; }
+                          const newDate = chartDays[Math.max(0,Math.min(chartDays.length-1,startIdx+dragDelta))];
+                          if(newDate) updateTasks(prev=>prev.map(t=>t.id===task.id?{...t,plannedStart:newDate}:t));
+                          setDragInfo(null);setDragOverCol(null);
+                        }}
+                        onDragEnd={()=>{setDragInfo(null);setDragOverCol(null);}}
                         style={{width:COL_W,minWidth:COL_W,height:ROW_H,
                           background:cellBg,
+                          cursor:inBar&&!isReleased?"grab":"default",
                           borderRight:di===startIdx-1||di===endIdx?`1px solid ${activeSeg?.color||T.b0}60`:`1px solid ${T.b0}`,
-                          opacity:isPreSprint&&!activeSeg?0.5:1,
+                          opacity:isPreSprint&&!showBar?0.5:1,
                           position:"relative",
+                          outline:isDragTarget&&showBar?`1px dashed ${T.acc}`:"none",
                         }}>
-                        {/* Lane label on first cell of each segment */}
-                        {activeSeg&&(di===0||!segments.find(s=>s.start<=chartDays[di-1]&&s.end>=chartDays[di-1]&&s.lane===activeSeg.lane))&&(
+                        {activeSeg&&!isDragTarget&&(di===0||!segments.find(s=>s.start<=chartDays[di-1]&&s.end>=chartDays[di-1]&&s.lane===activeSeg.lane))&&(
                           <span style={{position:"absolute",top:"50%",left:2,transform:"translateY(-50%)",fontSize:8,color:"#fff",fontWeight:700,pointerEvents:"none",opacity:0.9,letterSpacing:0.3}}>
                             {activeSeg.label}
                           </span>
                         )}
+                        {isDragTarget&&inPreviewBar&&di===previewStartIdx&&(
+                          <span style={{position:"absolute",top:"50%",left:2,transform:"translateY(-50%)",fontSize:8,color:T.acc,fontWeight:700,pointerEvents:"none",opacity:0.9,whiteSpace:"nowrap"}}>
+                            {chartDays[previewStartIdx]?.slice(5)}
+                          </span>
+                        )}
                         {isTodayCol&&<div style={{position:"absolute",top:0,left:"50%",width:1,height:"100%",background:T.acc,opacity:0.6}}/>}
-                        {isPastEnd&&!activeSeg&&<div style={{position:"absolute",inset:0,background:`${T.p1}08`}}/>}
+                        {isPastEnd&&!showBar&&<div style={{position:"absolute",inset:0,background:`${T.p1}08`}}/>}
                       </div>
                     );
                   })}
@@ -3063,6 +3102,122 @@ function TaskDetailDrawer({ task, tasks, updateTasks, config, predictions, pushT
   );
 }
 
+// ─── KANBAN VIEW (H2) ─────────────────────────────────────────────────────────
+function KanbanView({ tasks, updateTasks, predictions, config, onOpenTask }) {
+  const [dragTask, setDragTask] = useState(null);
+  const [dragOver, setDragOver] = useState(null);
+  const sprintEnd = config.sprintEnd||"2026-03-31";
+
+  const COLS = ["Planned","To Do","In Dev","In QA","Released","Blocked","Descoped"];
+
+  const byStatus = useMemo(()=>{
+    const m = {};
+    COLS.forEach(c=>{ m[c]=[] });
+    [...tasks].sort((a,b)=>(PRIORITY_ORDER[a.priority]??3)-(PRIORITY_ORDER[b.priority]??3))
+      .forEach(t=>{ if(m[t.status]) m[t.status].push(t); else m["To Do"].push(t); });
+    return m;
+  },[tasks]);
+
+  const dropOnCol = (col) => {
+    if (!dragTask || dragTask.status === col) { setDragTask(null); setDragOver(null); return; }
+    updateTasks(prev => prev.map(t => t.id === dragTask.id ? {...t, status: col} : t));
+    setDragTask(null); setDragOver(null);
+  };
+
+  const VISIBLE_COLS = COLS.filter(c => c !== "Descoped" || byStatus["Descoped"]?.length > 0);
+
+  return (
+    <div style={{padding:"16px 20px",height:"calc(100vh - 52px)",display:"flex",flexDirection:"column"}} className="fade-in">
+      <div style={{fontSize:10,color:T.t2,textTransform:"uppercase",letterSpacing:0.8,fontWeight:500,marginBottom:12,display:"flex",alignItems:"center",gap:8}}>
+        Kanban Board
+        <span style={{fontSize:9,color:T.t3,textTransform:"none",letterSpacing:0,fontWeight:400}}>drag cards to change status</span>
+      </div>
+      <div style={{display:"flex",gap:10,flex:1,overflowX:"auto",overflowY:"hidden",paddingBottom:8}}>
+        {VISIBLE_COLS.map(col=>{
+          const sc = STATUS_COLOR[col]||T.sDo;
+          const colTasks = byStatus[col]||[];
+          const isDragOver = dragOver === col;
+          return (
+            <div key={col}
+              onDragOver={e=>{e.preventDefault();setDragOver(col);}}
+              onDragLeave={()=>setDragOver(null)}
+              onDrop={()=>dropOnCol(col)}
+              style={{
+                width:220,minWidth:220,display:"flex",flexDirection:"column",
+                background:isDragOver?`${sc.text}08`:T.bg1,
+                border:`1px solid ${isDragOver?sc.text:T.b1}`,
+                borderRadius:8,overflow:"hidden",
+                transition:"all 0.12s",
+              }}>
+              {/* Column header */}
+              <div style={{padding:"8px 12px",borderBottom:`1px solid ${T.b1}`,display:"flex",justifyContent:"space-between",alignItems:"center",background:T.bg2}}>
+                <span className="tag" style={{background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`,fontSize:11}}>{col}</span>
+                <span style={{fontSize:11,fontWeight:600,color:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>{colTasks.length}</span>
+              </div>
+              {/* Cards */}
+              <div style={{flex:1,overflowY:"auto",padding:"8px 6px",display:"flex",flexDirection:"column",gap:6}}>
+                {colTasks.length === 0 && (
+                  <div style={{textAlign:"center",padding:"20px 8px",fontSize:11,color:T.t3,fontStyle:"italic",opacity:0.6}}>empty</div>
+                )}
+                {colTasks.map(t=>{
+                  const pc = PRIORITY_COLOR[t.priority]||PRIORITY_COLOR.P3;
+                  const pe = taskPredictedEnd(t.id, predictions);
+                  const isAtRisk = pe && fmtDate(pe) > sprintEnd && t.status !== "Released";
+                  const owners = [...new Set(Object.values(t.owners||{}).filter(Boolean))];
+                  const totalEff = Object.values(t.effort||{}).reduce((s,v)=>s+Number(v||0),0);
+                  const isDragging = dragTask?.id === t.id;
+                  return (
+                    <div key={t.id}
+                      draggable
+                      onDragStart={()=>setDragTask(t)}
+                      onDragEnd={()=>{setDragTask(null);setDragOver(null);}}
+                      style={{
+                        background:isDragging?T.bg3:T.bg0,
+                        border:`1px solid ${isAtRisk?T.sBlk.border:isDragging?T.acc:T.b1}`,
+                        borderRadius:7,padding:"10px 12px",cursor:"grab",
+                        opacity:isDragging?0.5:1,
+                        boxShadow:isDragging?"0 4px 12px rgba(0,0,0,0.15)":"0 1px 3px rgba(0,0,0,0.04)",
+                        transition:"opacity 0.1s",
+                        userSelect:"none",
+                      }}>
+                      {/* Top row: id + priority */}
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                        <span style={{fontSize:9,color:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>#{t.id}</span>
+                        <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                          {isAtRisk&&<span style={{fontSize:9,color:T.p1}}>⚠</span>}
+                          <span className="tag" style={{background:pc.bgCard,color:pc.bg,border:`1px solid ${pc.bg}30`,fontSize:9,padding:"1px 5px"}}>{t.priority}</span>
+                        </div>
+                      </div>
+                      {/* Task name */}
+                      <button onClick={()=>onOpenTask&&onOpenTask(t.id)} style={{background:"none",border:"none",padding:0,cursor:"pointer",textAlign:"left",width:"100%",marginBottom:6}}>
+                        <span style={{fontSize:12,color:isAtRisk?T.p1:T.t0,fontWeight:500,lineHeight:1.35,display:"block"}}>{t.name}</span>
+                      </button>
+                      {/* Bottom row: owners + effort + pred end */}
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                        <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
+                          {owners.slice(0,3).map(o=>(
+                            <span key={o} style={{fontSize:9,background:`${TEAM[o]?.bar||T.acc}18`,color:TEAM[o]?.bar||T.acc,border:`1px solid ${TEAM[o]?.bar||T.acc}30`,borderRadius:8,padding:"1px 5px",fontWeight:500}}>{o}</span>
+                          ))}
+                          {owners.length===0&&<span style={{fontSize:9,color:T.t3}}>—</span>}
+                        </div>
+                        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                          {totalEff>0&&<span style={{fontSize:9,color:T.t2,fontFamily:"'JetBrains Mono',monospace"}}>{totalEff}d</span>}
+                          {pe&&<span style={{fontSize:9,color:isAtRisk?T.p1:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>{fmtDate(pe).slice(5)}</span>}
+                        </div>
+                      </div>
+                      {t.notes&&<div style={{marginTop:5,fontSize:9,color:T.t2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.notes}</div>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ─── MOBILE STANDUP VIEW (C4) ──────────────────────────────────────────────────
 function MobileStandupView({ tasks, updateTasks, predictions, config, pushToast }) {
   const [filter, setFilter] = useState("active");
@@ -3273,7 +3428,7 @@ function ShortcutsOverlay() {
     ["J / K", "Navigate tasks up/down"],
     ["E", "Toggle edit mode"],
     ["C", "Create new task"],
-    ["1 – 5", "Switch tabs (Overview → Insights)"],
+    ["1 – 6", "Switch tabs (Overview → Insights)"],
     ["?", "Show/hide this overlay"],
     ["Esc", "Close drawer / overlay"],
   ];
