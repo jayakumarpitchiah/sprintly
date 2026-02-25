@@ -1255,6 +1255,7 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
           {view==="table"    &&<TableView tasks={tasks} config={config} editMode={editMode} updateTasks={updateTasks} updateConfig={updateConfig} predictions={predictions} velocity={velocity} cycles={cycles} pushToast={pushToast} onOpenTask={setTaskDrawerTask} focusedTaskIdx={focusedTaskIdx}/>}
           {view==="capacity" &&<CapacityView tasks={tasks} config={config} predictions={predictions}/>}
           {view==="insights" &&<InsightsView tasks={tasks} config={config} predictions={predictions} velocity={velocity}/>}
+          {view==="retro"    &&<RetroView tasks={tasks} config={config} predictions={predictions} velocity={velocity}/>}
         </div>
       </div>
       {calendarOpen&&<TeamCalendarPanel config={config} updateConfig={updateConfig} tasks={tasks} onClose={()=>setCalendarOpen(false)}/>}
@@ -1276,6 +1277,7 @@ function Header({editMode,setEditMode,view,setView,saving,onCalendar,calendarOpe
     {id:"table",    label:"Tasks"},
     {id:"capacity", label:"Capacity"},
     {id:"insights", label:"Insights"},
+    {id:"retro",    label:"Retro"},
   ];
   return (
     <div style={{position:"fixed",top:0,left:0,right:0,height:52,background:T.bg1,borderBottom:`1px solid ${T.b1}`,display:"flex",alignItems:"center",padding:"0 20px",zIndex:100}}>
@@ -1965,24 +1967,42 @@ function GanttView({tasks, config, predictions, onOpenTask, updateTasks}) {
 // ─── TABLE VIEW ───────────────────────────────────────────────────────────────
 function TableView({tasks, config, editMode, updateTasks, updateConfig, predictions, velocity, cycles=[], pushToast, onOpenTask, focusedTaskIdx}) {
   const [sortBy,setSortBy] = useState("priority");
+  const [groupBy,setGroupBy] = useState("none"); // none | status | priority
   const [filterStatus,setFilterStatus] = useState("All");
   const [filterPersons,setFilterPersons] = useState(new Set());
   const [filterPriority,setFilterPriority] = useState("All");
+  const [showDone,setShowDone] = useState(false);
+  const [search,setSearch] = useState("");
   const [selected,setSelected] = useState(new Set());
   const [bulkStatus,setBulkStatus] = useState("");
   const [confirmDelete,setConfirmDelete] = useState(null);
   const [drawerOpen,setDrawerOpen] = useState(false);
   const [configOpen,setConfigOpen] = useState(false);
+  const [personPopover,setPersonPopover] = useState(false);
+  const searchRef = useRef(null);
+
+  // focus search on /
+  useEffect(()=>{
+    const h = e => { if(e.key==="/" && !["INPUT","TEXTAREA"].includes(e.target.tagName)) { e.preventDefault(); searchRef.current?.focus(); } };
+    window.addEventListener("keydown",h);
+    return ()=>window.removeEventListener("keydown",h);
+  },[]);
 
   const togglePerson = p=>setFilterPersons(s=>{const n=new Set(s);n.has(p)?n.delete(p):n.add(p);return n;});
 
   const sorted = useMemo(()=>{
     let t=[...tasks];
+    // hide done unless toggled
+    if(!showDone) t=t.filter(x=>x.status!=="Released"&&x.status!=="Descoped");
     if(filterStatus!=="All") t=t.filter(x=>x.status===filterStatus);
     if(filterPriority!=="All") t=t.filter(x=>x.priority===filterPriority);
     if(filterPersons.size>0) t=t.filter(x=>
       ["ios","and","be","wc","qa"].some(l=>filterPersons.has(x.owners?.[l]))
     );
+    if(search.trim()) {
+      const q=search.trim().toLowerCase();
+      t=t.filter(x=>x.name.toLowerCase().includes(q)||String(x.id).includes(q)||(x.notes||"").toLowerCase().includes(q));
+    }
     if(sortBy==="priority") t.sort((a,b)=>(PRIORITY_ORDER[a.priority]??3)-(PRIORITY_ORDER[b.priority]??3));
     else if(sortBy==="status") t.sort((a,b)=>a.status.localeCompare(b.status));
     else if(sortBy==="id") t.sort((a,b)=>a.id-b.id);
@@ -1996,7 +2016,22 @@ function TableView({tasks, config, editMode, updateTasks, updateConfig, predicti
       });
     }
     return t;
-  },[tasks,sortBy,filterStatus,filterPersons,filterPriority]);
+  },[tasks,sortBy,filterStatus,filterPersons,filterPriority,showDone,search]);
+
+  // Group logic
+  const grouped = useMemo(()=>{
+    if(groupBy==="none") return [{key:"all",label:"",items:sorted}];
+    if(groupBy==="status") {
+      const order=["Blocked","In Dev","In QA","Planned","To Do","Released","Descoped"];
+      const map={};
+      sorted.forEach(t=>{ (map[t.status]||(map[t.status]=[])).push(t); });
+      return order.filter(s=>map[s]).map(s=>({key:s,label:s,items:map[s]}));
+    }
+    if(groupBy==="priority") {
+      return ["P1","P2","P3"].filter(p=>sorted.some(t=>t.priority===p)).map(p=>({key:p,label:p,items:sorted.filter(t=>t.priority===p)}));
+    }
+    return [{key:"all",label:"",items:sorted}];
+  },[sorted,groupBy]);
 
   const update=(id,path,val)=>{
     updateTasks(prev=>prev.map(t=>{
@@ -2027,12 +2062,21 @@ function TableView({tasks, config, editMode, updateTasks, updateConfig, predicti
     }}>{label}{sortBy===key?" ↑":""}</th>
   );
 
+  // progress bar stats
+  const totalActive = tasks.filter(t=>t.status!=="Descoped").length;
+  const totalDone   = tasks.filter(t=>t.status==="Released").length;
+  const pctDone     = totalActive>0 ? Math.round((totalDone/totalActive)*100) : 0;
+  const atRiskCount = tasks.filter(t=>{
+    if(t.status==="Released"||t.status==="Descoped") return false;
+    const pe=taskPredictedEnd(t.id,predictions); return pe&&fmtDate(pe)>sprintEnd;
+  }).length;
+
+  const STATUS_NEXT_MAP = {"Planned":"To Do","To Do":"In Dev","In Dev":"In QA","In QA":"Released"};
+
   return (
     <div style={{height:"calc(100vh - 52px)",display:"flex",flexDirection:"column",overflow:"hidden"}} className="fade-in">
-      {/* Drawer */}
       {drawerOpen&&<AddTaskDrawer tasks={tasks} updateTasks={updateTasks} onClose={()=>setDrawerOpen(false)} config={config} predictions={predictions}/>}
 
-      {/* Confirm delete */}
       {confirmDelete&&(
         <div style={{position:"fixed",inset:0,background:"#00000040",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center"}}>
           <div style={{background:T.bg1,border:`1px solid ${T.sBlk.border}`,borderRadius:8,padding:22,maxWidth:340,width:"90%"}}>
@@ -2048,59 +2092,137 @@ function TableView({tasks, config, editMode, updateTasks, updateConfig, predicti
         </div>
       )}
 
-      {/* Cycle warning */}
       {cycles.length>0&&(
         <div style={{background:T.p1bg,borderBottom:`1px solid ${T.sBlk.border}`,padding:"8px 16px",display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
           <span style={{fontSize:12}}>⚠️</span>
           <span style={{fontSize:11,color:T.p1,fontWeight:500}}>Circular dependency detected</span>
-          <span style={{fontSize:11,color:T.t1}}>Tasks {cycles.map(id=>`#${id}`).join(", ")} are in a dependency loop — predictions for these tasks may be incorrect. Fix in the Depends on column.</span>
+          <span style={{fontSize:11,color:T.t1}}>Tasks {cycles.map(id=>`#${id}`).join(", ")} are in a dependency loop.</span>
         </div>
       )}
-      {/* Toolbar */}
-      <div style={{padding:"10px 16px",borderBottom:`1px solid ${T.b1}`,background:T.bg0,flexShrink:0}}>
-        <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"center",flexWrap:"wrap"}}>
-          {/* Status dropdown */}
+
+      {/* ── Progress bar ── */}
+      <div style={{padding:"8px 16px",borderBottom:`1px solid ${T.b0}`,background:T.bg0,flexShrink:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:5}}>
+          <span style={{fontSize:11,color:T.t2,fontFamily:"'JetBrains Mono',monospace",flexShrink:0}}>{totalDone}/{totalActive} done</span>
+          <div style={{flex:1,height:4,background:T.bg2,borderRadius:2,overflow:"hidden"}}>
+            <div style={{height:"100%",width:`${pctDone}%`,background:pctDone===100?T.p3:T.acc,borderRadius:2,transition:"width 0.3s"}}/>
+          </div>
+          <span style={{fontSize:11,fontFamily:"'JetBrains Mono',monospace",color:pctDone===100?T.p3:T.t2,flexShrink:0}}>{pctDone}%</span>
+          {atRiskCount>0&&<span style={{fontSize:10,color:T.p1,background:T.p1bg,padding:"1px 7px",borderRadius:8,border:`1px solid ${T.sBlk.border}`,flexShrink:0}}>⚠ {atRiskCount} at risk</span>}
+        </div>
+      </div>
+
+      {/* ── Toolbar ── */}
+      <div style={{padding:"8px 16px",borderBottom:`1px solid ${T.b1}`,background:T.bg0,flexShrink:0}}>
+        <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+
+          {/* Search */}
+          <div style={{position:"relative",flexShrink:0}}>
+            <span style={{position:"absolute",left:8,top:"50%",transform:"translateY(-50%)",fontSize:11,color:T.t3,pointerEvents:"none"}}>⌕</span>
+            <input ref={searchRef} value={search} onChange={e=>setSearch(e.target.value)}
+              placeholder="Search… ( / )"
+              style={{paddingLeft:22,paddingRight:8,height:28,borderRadius:5,fontSize:11,background:T.bg2,
+                color:T.t0,border:`1px solid ${search?T.acc:T.b1}`,outline:"none",width:160}}/>
+            {search&&<button onClick={()=>setSearch("")} style={{position:"absolute",right:6,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",color:T.t3,cursor:"pointer",fontSize:12,lineHeight:1}}>×</button>}
+          </div>
+
+          {/* Status filter */}
           <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)}
-            style={{padding:"4px 8px",borderRadius:5,fontSize:11,background:T.bg2,color:filterStatus!=="All"?T.acc:T.t1,border:`1px solid ${filterStatus!=="All"?T.acc:T.b1}`,cursor:"pointer",outline:"none",fontWeight:filterStatus!=="All"?500:400}}>
-            <option value="All">All Statuses</option>
+            style={{height:28,padding:"0 8px",borderRadius:5,fontSize:11,background:T.bg2,
+              color:filterStatus!=="All"?T.acc:T.t2,border:`1px solid ${filterStatus!=="All"?T.acc:T.b1}`,cursor:"pointer",outline:"none"}}>
+            <option value="All">All statuses</option>
             {STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
           </select>
-          {/* Priority dropdown */}
+
+          {/* Priority filter */}
           <select value={filterPriority} onChange={e=>setFilterPriority(e.target.value)}
-            style={{padding:"4px 8px",borderRadius:5,fontSize:11,background:T.bg2,color:filterPriority!=="All"?(filterPriority==="P1"?T.p1:filterPriority==="P2"?T.p2:T.p3):T.t1,border:`1px solid ${filterPriority!=="All"?(filterPriority==="P1"?T.p1:filterPriority==="P2"?T.p2:T.p3):T.b1}`,cursor:"pointer",outline:"none",fontWeight:filterPriority!=="All"?500:400}}>
-            <option value="All">All Priorities</option>
+            style={{height:28,padding:"0 8px",borderRadius:5,fontSize:11,background:T.bg2,
+              color:filterPriority!=="All"?(filterPriority==="P1"?T.p1:filterPriority==="P2"?T.p2:T.p3):T.t2,
+              border:`1px solid ${filterPriority!=="All"?(filterPriority==="P1"?T.p1:filterPriority==="P2"?T.p2:T.p3):T.b1}`,cursor:"pointer",outline:"none"}}>
+            <option value="All">All priorities</option>
             {["P1","P2","P3"].map(p=><option key={p} value={p}>{p}</option>)}
           </select>
-          {(filterStatus!=="All"||filterPriority!=="All")&&(
-            <button className="btn" onClick={()=>{setFilterStatus("All");setFilterPriority("All");}}
-              style={{padding:"3px 8px",borderRadius:5,fontSize:10,background:"transparent",color:T.t3,border:`1px solid ${T.b1}`}}>✕ clear</button>
+
+          {/* Person filter popover */}
+          <div style={{position:"relative"}}>
+            <button className="btn" onClick={()=>setPersonPopover(p=>!p)} style={{
+              height:28,padding:"0 10px",borderRadius:5,fontSize:11,
+              background:filterPersons.size>0?`${T.acc}18`:T.bg2,
+              color:filterPersons.size>0?T.acc:T.t2,
+              border:`1px solid ${filterPersons.size>0?T.acc:T.b1}`,cursor:"pointer"
+            }}>
+              👥 {filterPersons.size>0?`${filterPersons.size} people`:"People"}
+            </button>
+            {personPopover&&(
+              <div style={{position:"absolute",top:34,left:0,zIndex:50,background:T.bg1,border:`1px solid ${T.b2}`,borderRadius:8,padding:12,boxShadow:"0 8px 24px #00000040",minWidth:200}}>
+                <div style={{fontSize:10,color:T.t3,marginBottom:8,textTransform:"uppercase",letterSpacing:0.5}}>Filter by person</div>
+                <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                  {TEAM_NAMES.map(p=>{
+                    const sel=filterPersons.has(p); const color=TEAM[p]?.bar||T.acc;
+                    return (
+                      <button key={p} className="btn" onClick={()=>togglePerson(p)} style={{
+                        display:"flex",alignItems:"center",gap:8,padding:"5px 8px",borderRadius:5,
+                        background:sel?`${color}18`:"transparent",color:sel?color:T.t1,
+                        border:`1px solid ${sel?`${color}50`:T.b1}`,textAlign:"left",fontSize:11,fontWeight:sel?500:400
+                      }}>
+                        <div style={{width:18,height:18,borderRadius:"50%",background:`${color}25`,border:`1.5px solid ${color}60`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,fontWeight:700,color,flexShrink:0}}>{p.slice(0,2).toUpperCase()}</div>
+                        {p}
+                        {sel&&<span style={{marginLeft:"auto",fontSize:10}}>✓</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+                {filterPersons.size>0&&<button className="btn" onClick={()=>{setFilterPersons(new Set());setPersonPopover(false);}} style={{marginTop:8,width:"100%",padding:"4px 0",borderRadius:5,fontSize:10,background:"transparent",color:T.t3,border:`1px solid ${T.b1}`}}>Clear</button>}
+                <button className="btn" onClick={()=>setPersonPopover(false)} style={{position:"absolute",top:8,right:8,background:"transparent",border:"none",color:T.t3,fontSize:13,cursor:"pointer",lineHeight:1}}>×</button>
+              </div>
+            )}
+          </div>
+
+          {/* Group by */}
+          <select value={groupBy} onChange={e=>setGroupBy(e.target.value)}
+            style={{height:28,padding:"0 8px",borderRadius:5,fontSize:11,background:T.bg2,
+              color:groupBy!=="none"?T.acc:T.t2,border:`1px solid ${groupBy!=="none"?T.acc:T.b1}`,cursor:"pointer",outline:"none"}}>
+            <option value="none">No grouping</option>
+            <option value="status">Group by status</option>
+            <option value="priority">Group by priority</option>
+          </select>
+
+          {/* Show done toggle */}
+          <button className="btn" onClick={()=>setShowDone(s=>!s)} style={{
+            height:28,padding:"0 10px",borderRadius:5,fontSize:11,
+            background:showDone?`${T.p3}18`:T.bg2,color:showDone?T.p3:T.t3,
+            border:`1px solid ${showDone?T.p3:T.b1}`,cursor:"pointer"
+          }}>
+            {showDone?"Hide done":"Show done"}
+          </button>
+
+          {/* Clear all filters */}
+          {(filterStatus!=="All"||filterPriority!=="All"||filterPersons.size>0||search)&&(
+            <button className="btn" onClick={()=>{setFilterStatus("All");setFilterPriority("All");setFilterPersons(new Set());setSearch("");}}
+              style={{height:28,padding:"0 8px",borderRadius:5,fontSize:10,background:"transparent",color:T.t3,border:`1px solid ${T.b1}`}}>✕ clear all</button>
           )}
+
           <div style={{flex:1}}/>
-          {editMode&&(
-            <>
-              <button className="btn" onClick={()=>setDrawerOpen(true)} style={{padding:"5px 12px",borderRadius:5,fontSize:11,fontWeight:500,background:T.acc,color:"#fff",border:"none",display:"flex",alignItems:"center",gap:4}}>+ Add Task</button>
-              <button className="btn" onClick={()=>setConfigOpen(o=>!o)} style={{padding:"5px 11px",borderRadius:5,fontSize:11,background:T.bg2,color:T.t2,border:`1px solid ${T.b1}`}}>⚙</button>
-            </>
-          )}
+
           <span style={{fontSize:10,color:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>{sorted.length}/{tasks.length}</span>
+
+          {/* Add Task — always visible */}
+          <button className="btn" onClick={()=>setDrawerOpen(true)} style={{
+            height:28,padding:"0 12px",borderRadius:5,fontSize:11,fontWeight:500,
+            background:T.acc,color:"#fff",border:"none",display:"flex",alignItems:"center",gap:4
+          }}>+ Task</button>
+
+          {editMode&&(
+            <button className="btn" onClick={()=>setConfigOpen(o=>!o)} style={{height:28,padding:"0 10px",borderRadius:5,fontSize:11,background:T.bg2,color:T.t2,border:`1px solid ${T.b1}`}}>⚙</button>
+          )}
         </div>
-        {/* Person filter row */}
-        <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
-          {TEAM_NAMES.map(p=>{
-            const sel=filterPersons.has(p);
-            const color=TEAM[p]?.bar||T.acc;
-            return (
-              <button key={p} className="btn" onClick={()=>togglePerson(p)} style={{padding:"2px 8px",borderRadius:10,fontSize:10,fontWeight:sel?500:400,background:sel?`${color}18`:"transparent",color:sel?color:T.t2,border:`1px solid ${sel?`${color}60`:T.b1}`}}>{p}</button>
-            );
-          })}
-          {filterPersons.size>0&&<button className="btn" onClick={()=>setFilterPersons(new Set())} style={{padding:"2px 7px",borderRadius:10,fontSize:10,background:"transparent",color:T.t3,border:`1px solid ${T.b1}`}}>✕ clear</button>}
-        </div>
+
         {/* Bulk actions */}
         {editMode&&selected.size>0&&(
-          <div style={{display:"flex",gap:8,alignItems:"center",marginTop:8,padding:"7px 12px",background:T.bg2,borderRadius:6,border:`1px solid ${T.b2}`,flexWrap:"wrap"}}>
+          <div style={{display:"flex",gap:8,alignItems:"center",marginTop:8,padding:"6px 10px",background:T.bg2,borderRadius:6,border:`1px solid ${T.b2}`,flexWrap:"wrap"}}>
             <span style={{fontSize:11,color:T.acc,fontWeight:500}}>{selected.size} selected</span>
-            <select value={bulkStatus} onChange={e=>setBulkStatus(e.target.value)} style={{background:T.bg1,color:T.t0,border:`1px solid ${T.b2}`,borderRadius:4,padding:"3px 7px",fontSize:11}}>
-              <option value="">— status —</option>
+            <select value={bulkStatus} onChange={e=>setBulkStatus(e.target.value)} style={{background:T.bg1,color:T.t0,border:`1px solid ${T.b2}`,borderRadius:4,padding:"2px 7px",fontSize:11}}>
+              <option value="">— set status —</option>
               {STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
             </select>
             <button className="btn" onClick={()=>applyBulk("status",bulkStatus)} disabled={!bulkStatus} style={{padding:"3px 9px",borderRadius:4,background:bulkStatus?T.bg3:T.bg1,color:bulkStatus?T.acc:T.t3,border:`1px solid ${T.b2}`,fontSize:11}}>Apply</button>
@@ -2111,15 +2233,15 @@ function TableView({tasks, config, editMode, updateTasks, updateConfig, predicti
         {configOpen&&editMode&&<ConfigPanel config={config} updateConfig={updateConfig} onClose={()=>setConfigOpen(false)}/>}
       </div>
 
-      {/* Clean task list */}
+      {/* ── Task list ── */}
       <div style={{flex:1,overflow:"auto"}}>
         {/* Column headers */}
         <div style={{
           display:"grid",
-          gridTemplateColumns:editMode?"32px 36px 48px 1fr 160px 120px 100px 32px":"36px 48px 1fr 160px 120px 100px",
+          gridTemplateColumns:editMode?"32px 36px 48px 1fr 160px 120px 100px 32px":"36px 48px 1fr 160px 120px 100px 28px",
           alignItems:"center",
           padding:"0 16px",
-          height:36,
+          height:32,
           borderBottom:`1px solid ${T.b1}`,
           background:T.bg1,
           position:"sticky",top:0,zIndex:10,
@@ -2130,182 +2252,183 @@ function TableView({tasks, config, editMode, updateTasks, updateConfig, predicti
               {l}{sortBy===k?" ↑":""}
             </div>
           ))}
-          <div onClick={()=>setSortBy("name")} style={{fontSize:10,color:sortBy==="name"?T.acc:T.t3,fontWeight:600,textTransform:"uppercase",letterSpacing:0.8,cursor:"pointer",userSelect:"none"}}>
-            Task{sortBy==="name"?" ↑":""}
-          </div>
+          <div onClick={()=>setSortBy("name")} style={{fontSize:10,color:sortBy==="name"?T.acc:T.t3,fontWeight:600,textTransform:"uppercase",letterSpacing:0.8,cursor:"pointer",userSelect:"none"}}>Task{sortBy==="name"?" ↑":""}</div>
           <div style={{fontSize:10,color:T.t3,fontWeight:600,textTransform:"uppercase",letterSpacing:0.8}}>Team</div>
-          <div onClick={()=>setSortBy("predictedEnd")} style={{fontSize:10,color:sortBy==="predictedEnd"?T.acc:T.t3,fontWeight:600,textTransform:"uppercase",letterSpacing:0.8,cursor:"pointer",userSelect:"none"}}>
-            Pred End{sortBy==="predictedEnd"?" ↑":""}
-          </div>
-          <div onClick={()=>setSortBy("status")} style={{fontSize:10,color:sortBy==="status"?T.acc:T.t3,fontWeight:600,textTransform:"uppercase",letterSpacing:0.8,cursor:"pointer",userSelect:"none"}}>
-            Status{sortBy==="status"?" ↑":""}
-          </div>
+          <div onClick={()=>setSortBy("predictedEnd")} style={{fontSize:10,color:sortBy==="predictedEnd"?T.acc:T.t3,fontWeight:600,textTransform:"uppercase",letterSpacing:0.8,cursor:"pointer",userSelect:"none"}}>Pred End{sortBy==="predictedEnd"?" ↑":""}</div>
+          <div onClick={()=>setSortBy("status")} style={{fontSize:10,color:sortBy==="status"?T.acc:T.t3,fontWeight:600,textTransform:"uppercase",letterSpacing:0.8,cursor:"pointer",userSelect:"none"}}>Status{sortBy==="status"?" ↑":""}</div>
+          <div/>
           {editMode&&<div/>}
         </div>
 
-        {/* Rows */}
-        {sorted.map((t,ti)=>{
-          const pc  = PRIORITY_COLOR[t.priority]||PRIORITY_COLOR["P3"];
-          const sc  = STATUS_COLOR[t.status]||T.sDo;
-          const isSel = selected.has(t.id);
-          const bg  = isSel ? `${T.acc}12` : "transparent";
-
-          const pe    = taskPredictedEnd(t.id, predictions);
-          const peStr = pe ? fmtDate(pe) : "";
-          const isAtRisk = peStr && peStr > sprintEnd && t.status !== "Released";
-          const isDone   = t.status === "Released" || t.status === "Descoped";
-
-          const slipDays = t.actualEnd && t.plannedEnd
-            ? Math.round((parseDate(t.actualEnd)-parseDate(t.plannedEnd))/86400000) : null;
-
-          // Team avatars: unique owners across lanes
-          const ownerLanes = ["ios","and","be","wc","qa"]
-            .map(l=>({l, owner:t.owners?.[l]||"", eff:Number(t.effort?.[l]||0)}))
-            .filter(x=>x.owner && x.eff>0);
-          const uniqueOwners = [...new Map(ownerLanes.map(x=>[x.owner,x])).values()];
-          const totalEff = ownerLanes.reduce((s,x)=>s+x.eff,0);
-
-          // Velocity warn on any owner
-          const hasVelWarn = ownerLanes.some(({owner})=>
-            owner && velocity[owner]?.count>=2 && velocity[owner]?.avgSlip>2
-          );
-
-          const commentCount = (t.comments||[]).length;
-
-          return (
-            <div
-              key={t.id}
-              onClick={()=> !editMode && onOpenTask && onOpenTask(t.id)}
-              style={{
-                display:"grid",
-                gridTemplateColumns:editMode?"32px 36px 48px 1fr 160px 120px 100px 32px":"36px 48px 1fr 160px 120px 100px",
-                alignItems:"center",
-                padding:"0 16px",
-                minHeight:44,
-                background:bg,
-                borderBottom:`1px solid ${T.b0}`,
-                cursor: editMode ? "default" : "pointer",
-                transition:"background 0.1s",
-                opacity: isDone ? 0.55 : 1,
-              }}
-              onMouseEnter={e=>{ if(!editMode) e.currentTarget.style.background=`${T.acc}08`; }}
-              onMouseLeave={e=>{ e.currentTarget.style.background=bg; }}
-            >
-              {/* Checkbox */}
-              {editMode&&(
-                <div onClick={e=>e.stopPropagation()}>
-                  <input type="checkbox" checked={isSel} onChange={()=>toggleSelect(t.id)} style={{cursor:"pointer",accentColor:T.acc}}/>
-                </div>
-              )}
-
-              {/* ID */}
-              <div style={{fontSize:10,color:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>{t.id}</div>
-
-              {/* Priority */}
-              <div onClick={e=>e.stopPropagation()}>
-                {editMode
-                  ? <select value={t.priority} onChange={e=>update(t.id,"priority",e.target.value)}
-                      style={{background:T.bg2,color:T.t0,border:`1px solid ${T.b2}`,borderRadius:4,padding:"2px 4px",fontSize:10,width:40}}>
-                      {["P1","P2","P3"].map(p=><option key={p} value={p}>{p}</option>)}
-                    </select>
-                  : <span className="tag" style={{background:pc.bgCard,color:pc.bg,border:`1px solid ${pc.bg}30`,fontSize:10}}>{t.priority}</span>
-                }
+        {grouped.map(group=>(
+          <div key={group.key}>
+            {/* Group header */}
+            {groupBy!=="none"&&(
+              <div style={{
+                padding:"6px 16px",background:T.bg2,borderBottom:`1px solid ${T.b1}`,
+                display:"flex",alignItems:"center",gap:8,position:"sticky",top:32,zIndex:9
+              }}>
+                {groupBy==="status"&&<span className="tag" style={{background:STATUS_COLOR[group.label]?.bg,color:STATUS_COLOR[group.label]?.text,border:`1px solid ${STATUS_COLOR[group.label]?.border}`,fontSize:10}}>{group.label}</span>}
+                {groupBy==="priority"&&<span className="tag" style={{background:PRIORITY_COLOR[group.label]?.bgCard,color:PRIORITY_COLOR[group.label]?.bg,border:`1px solid ${PRIORITY_COLOR[group.label]?.bg}30`,fontSize:10}}>{group.label}</span>}
+                <span style={{fontSize:10,color:T.t3}}>{group.items.length} task{group.items.length!==1?"s":""}</span>
               </div>
+            )}
 
-              {/* Task name + meta */}
-              <div style={{minWidth:0, paddingRight:12}}>
-                {editMode
-                  ? <input type="text" value={t.name} onChange={e=>update(t.id,"name",e.target.value)}
-                      onClick={e=>e.stopPropagation()}
-                      style={{background:"transparent",color:T.t0,border:"none",borderBottom:`1px solid ${T.b2}`,
-                        padding:"2px 0",fontSize:13,width:"100%",outline:"none"}}/>
-                  : <div style={{display:"flex",alignItems:"center",gap:6,minWidth:0}}>
-                      {isAtRisk && <span style={{fontSize:10,color:T.p1,flexShrink:0}}>⚠</span>}
-                      <span style={{fontSize:13,color:isDone?T.t3:T.t0,fontWeight:500,
-                        whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",
-                        textDecoration:isDone?"line-through":"none"}}>{t.name}</span>
-                      {(t.dependsOn||[]).length>0 && (
-                        <span style={{fontSize:9,color:T.t3,flexShrink:0,fontFamily:"'JetBrains Mono',monospace"}}>
-                          ← #{(t.dependsOn||[]).join(",")}
-                        </span>
-                      )}
-                      {commentCount>0 && (
-                        <span style={{fontSize:9,color:T.acc,flexShrink:0}}>💬{commentCount}</span>
-                      )}
-                      {t.notes && (
-                        <span style={{fontSize:10,color:T.t3,flexShrink:0}} title={t.notes}>📝</span>
-                      )}
+            {/* Rows */}
+            {group.items.map((t,ti)=>{
+              const globalIdx = sorted.indexOf(t);
+              const isFocused = globalIdx === focusedTaskIdx;
+              const pc  = PRIORITY_COLOR[t.priority]||PRIORITY_COLOR["P3"];
+              const sc  = STATUS_COLOR[t.status]||T.sDo;
+              const isSel = selected.has(t.id);
+              const isDone = t.status==="Released"||t.status==="Descoped";
+              const bg = isFocused ? `${T.acc}15` : isSel ? `${T.acc}10` : "transparent";
+
+              const pe    = taskPredictedEnd(t.id, predictions);
+              const peStr = pe ? fmtDate(pe) : "";
+              const isAtRisk = peStr && peStr > sprintEnd && t.status !== "Released";
+
+              const slipDays = t.actualEnd && t.plannedEnd
+                ? Math.round((parseDate(t.actualEnd)-parseDate(t.plannedEnd))/86400000) : null;
+
+              const ownerLanes = ["ios","and","be","wc","qa"]
+                .map(l=>({l, owner:t.owners?.[l]||"", eff:Number(t.effort?.[l]||0)}))
+                .filter(x=>x.owner && x.eff>0);
+              const uniqueOwners = [...new Map(ownerLanes.map(x=>[x.owner,x])).values()];
+              const totalEff = ownerLanes.reduce((s,x)=>s+x.eff,0);
+              const commentCount = (t.comments||[]).length;
+              const nextStatus = STATUS_NEXT_MAP[t.status];
+
+              return (
+                <div
+                  key={t.id}
+                  onClick={()=> !editMode && onOpenTask && onOpenTask(t.id)}
+                  style={{
+                    display:"grid",
+                    gridTemplateColumns:editMode?"32px 36px 48px 1fr 160px 120px 100px 32px":"36px 48px 1fr 160px 120px 100px 28px",
+                    alignItems:"center",
+                    padding:"0 16px",
+                    minHeight:44,
+                    background:bg,
+                    borderBottom:`1px solid ${T.b0}`,
+                    borderLeft:isFocused?`2px solid ${T.acc}`:"2px solid transparent",
+                    cursor: editMode ? "default" : "pointer",
+                    transition:"background 0.1s",
+                    opacity: isDone ? 0.5 : 1,
+                  }}
+                  onMouseEnter={e=>{ if(!isFocused&&!isSel) e.currentTarget.style.background=`${T.acc}07`; }}
+                  onMouseLeave={e=>{ e.currentTarget.style.background=bg; }}
+                >
+                  {editMode&&(
+                    <div onClick={e=>e.stopPropagation()}>
+                      <input type="checkbox" checked={isSel} onChange={()=>toggleSelect(t.id)} style={{cursor:"pointer",accentColor:T.acc}}/>
                     </div>
-                }
-              </div>
+                  )}
 
-              {/* Team: owner avatars + effort */}
-              <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"nowrap",overflow:"hidden"}}>
-                {uniqueOwners.slice(0,4).map(({owner})=>{
-                  const color = TEAM[owner]?.bar||T.acc;
-                  const initials = owner.slice(0,2).toUpperCase();
-                  const hasWarn = velocity[owner]?.count>=2 && velocity[owner]?.avgSlip>2;
-                  return (
-                    <div key={owner} title={`${owner}${hasWarn?" ⚠ slow velocity":""}`} style={{
-                      width:22,height:22,borderRadius:"50%",
-                      background:`${color}20`,border:`1.5px solid ${color}60`,
-                      display:"flex",alignItems:"center",justifyContent:"center",
-                      fontSize:8,fontWeight:700,color,flexShrink:0,position:"relative",
-                    }}>
-                      {initials}
-                      {hasWarn&&<span style={{position:"absolute",top:-3,right:-3,fontSize:7,color:T.p2}}>⚠</span>}
-                    </div>
-                  );
-                })}
-                {uniqueOwners.length===0 && <span style={{fontSize:10,color:T.t3}}>—</span>}
-                {totalEff>0 && <span style={{fontSize:10,color:T.t3,fontFamily:"'JetBrains Mono',monospace",marginLeft:2}}>{totalEff}d</span>}
-              </div>
+                  <div style={{fontSize:10,color:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>{t.id}</div>
 
-              {/* Predicted end */}
-              <div>
-                <span style={{
-                  fontSize:12,fontFamily:"'JetBrains Mono',monospace",
-                  color:isAtRisk?T.p1:peStr?T.p3:T.t3,
-                  fontWeight:isAtRisk?600:400,
-                }}>
-                  {peStr?peStr.slice(5):"—"}
-                </span>
-                {slipDays!==null&&(
-                  <span style={{fontSize:10,fontFamily:"'JetBrains Mono',monospace",marginLeft:6,
-                    color:slipDays>0?T.p1:slipDays<0?"#3a8a5a":T.t3}}>
-                    {slipDays>0?"+":""}{slipDays}d
-                  </span>
-                )}
-              </div>
+                  <div onClick={e=>e.stopPropagation()}>
+                    {editMode
+                      ? <select value={t.priority} onChange={e=>update(t.id,"priority",e.target.value)}
+                          style={{background:T.bg2,color:T.t0,border:`1px solid ${T.b2}`,borderRadius:4,padding:"2px 4px",fontSize:10,width:40}}>
+                          {["P1","P2","P3"].map(p=><option key={p} value={p}>{p}</option>)}
+                        </select>
+                      : <span className="tag" style={{background:pc.bgCard,color:pc.bg,border:`1px solid ${pc.bg}30`,fontSize:10}}>{t.priority}</span>
+                    }
+                  </div>
 
-              {/* Status */}
-              <div onClick={e=>e.stopPropagation()}>
-                {editMode
-                  ? <select value={t.status} onChange={e=>update(t.id,"status",e.target.value)}
-                      style={{background:T.bg2,color:T.t0,border:`1px solid ${T.b2}`,borderRadius:4,
-                        padding:"3px 5px",fontSize:11,width:"100%"}}>
-                      {STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
-                    </select>
-                  : <span className="tag" style={{background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`}}>{t.status}</span>
-                }
-              </div>
+                  {/* Task name */}
+                  <div style={{minWidth:0, paddingRight:8}}>
+                    {editMode
+                      ? <input type="text" value={t.name} onChange={e=>update(t.id,"name",e.target.value)}
+                          onClick={e=>e.stopPropagation()}
+                          style={{background:"transparent",color:T.t0,border:"none",borderBottom:`1px solid ${T.b2}`,padding:"2px 0",fontSize:13,width:"100%",outline:"none"}}/>
+                      : <div style={{display:"flex",alignItems:"center",gap:5,minWidth:0}}>
+                          {isAtRisk && <span style={{fontSize:10,color:T.p1,flexShrink:0}}>⚠</span>}
+                          <span style={{fontSize:13,color:isDone?T.t3:T.t0,fontWeight:500,
+                            whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",
+                            textDecoration:isDone?"line-through":"none"}}>{t.name}</span>
+                          {(t.dependsOn||[]).length>0&&<span style={{fontSize:9,color:T.t3,flexShrink:0,fontFamily:"'JetBrains Mono',monospace"}}>← #{(t.dependsOn||[]).join(",")}</span>}
+                          {commentCount>0&&<span style={{fontSize:9,color:T.acc,flexShrink:0}}>💬{commentCount}</span>}
+                          {t.notes&&<span style={{fontSize:10,color:T.t3,flexShrink:0}} title={t.notes}>📝</span>}
+                        </div>
+                    }
+                  </div>
 
-              {/* Delete */}
-              {editMode&&(
-                <div onClick={e=>e.stopPropagation()} style={{textAlign:"center"}}>
-                  <button className="btn" onClick={()=>setConfirmDelete(t.id)}
-                    style={{padding:"3px 6px",borderRadius:4,background:"transparent",color:T.t3,border:"none",fontSize:12}}
-                    onMouseEnter={e=>{e.target.style.color=T.p1;}}
-                    onMouseLeave={e=>{e.target.style.color=T.t3;}}>🗑</button>
+                  {/* Team avatars */}
+                  <div style={{display:"flex",alignItems:"center",gap:3,overflow:"hidden"}}>
+                    {uniqueOwners.slice(0,4).map(({owner})=>{
+                      const color=TEAM[owner]?.bar||T.acc;
+                      const hasWarn=velocity[owner]?.count>=2&&velocity[owner]?.avgSlip>2;
+                      return (
+                        <div key={owner} title={`${owner}${hasWarn?" ⚠ slow velocity":""}`} style={{
+                          width:22,height:22,borderRadius:"50%",background:`${color}20`,
+                          border:`1.5px solid ${color}60`,display:"flex",alignItems:"center",
+                          justifyContent:"center",fontSize:8,fontWeight:700,color,flexShrink:0,position:"relative"
+                        }}>
+                          {owner.slice(0,2).toUpperCase()}
+                          {hasWarn&&<span style={{position:"absolute",top:-3,right:-3,fontSize:7,color:T.p2}}>⚠</span>}
+                        </div>
+                      );
+                    })}
+                    {uniqueOwners.length===0&&<span style={{fontSize:10,color:T.t3}}>—</span>}
+                    {totalEff>0&&<span style={{fontSize:10,color:T.t3,fontFamily:"'JetBrains Mono',monospace",marginLeft:2}}>{totalEff}d</span>}
+                  </div>
+
+                  {/* Pred end + slip */}
+                  <div>
+                    <span style={{fontSize:12,fontFamily:"'JetBrains Mono',monospace",color:isAtRisk?T.p1:peStr?T.p3:T.t3,fontWeight:isAtRisk?600:400}}>
+                      {peStr?peStr.slice(5):"—"}
+                    </span>
+                    {slipDays!==null&&(
+                      <span style={{fontSize:10,fontFamily:"'JetBrains Mono',monospace",marginLeft:5,color:slipDays>0?T.p1:slipDays<0?"#3a8a5a":T.t3}}>
+                        {slipDays>0?"+":""}{slipDays}d
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Status — inline click to advance in view mode */}
+                  <div onClick={e=>e.stopPropagation()}>
+                    {editMode
+                      ? <select value={t.status} onChange={e=>update(t.id,"status",e.target.value)}
+                          style={{background:T.bg2,color:T.t0,border:`1px solid ${T.b2}`,borderRadius:4,padding:"3px 5px",fontSize:11,width:"100%"}}>
+                          {STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
+                        </select>
+                      : <span className="tag" style={{background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`,cursor:"default"}}>{t.status}</span>
+                    }
+                  </div>
+
+                  {/* Quick advance arrow — always visible in view mode */}
+                  <div onClick={e=>e.stopPropagation()} style={{display:"flex",justifyContent:"center"}}>
+                    {!editMode && nextStatus && (
+                      <button className="btn" title={`→ ${nextStatus}`}
+                        onClick={()=>{ update(t.id,"status",nextStatus); pushToast(`#${t.id} → ${nextStatus}`,"success",2000); }}
+                        style={{width:22,height:22,borderRadius:4,background:"transparent",border:`1px solid ${T.b1}`,
+                          color:T.t3,fontSize:11,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",padding:0}}
+                        onMouseEnter={e=>{e.currentTarget.style.background=`${T.acc}20`;e.currentTarget.style.color=T.acc;e.currentTarget.style.borderColor=T.acc;}}
+                        onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.color=T.t3;e.currentTarget.style.borderColor=T.b1;}}>
+                        →
+                      </button>
+                    )}
+                    {editMode&&(
+                      <button className="btn" onClick={()=>setConfirmDelete(t.id)}
+                        style={{width:22,height:22,borderRadius:4,background:"transparent",color:T.t3,border:"none",fontSize:12,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}
+                        onMouseEnter={e=>{e.currentTarget.style.color=T.p1;}}
+                        onMouseLeave={e=>{e.currentTarget.style.color=T.t3;}}>🗑</button>
+                    )}
+                  </div>
                 </div>
-              )}
-            </div>
-          );
-        })}
+              );
+            })}
+          </div>
+        ))}
 
         {sorted.length===0&&(
-          <div style={{padding:"48px 0",textAlign:"center",color:T.t3,fontSize:13,fontStyle:"italic"}}>
-            No tasks match the current filters
+          <div style={{padding:"56px 0",textAlign:"center"}}>
+            <div style={{fontSize:32,marginBottom:10}}>🔍</div>
+            <div style={{fontSize:13,color:T.t2,marginBottom:6}}>No tasks match your filters</div>
+            <button className="btn" onClick={()=>{setFilterStatus("All");setFilterPriority("All");setFilterPersons(new Set());setSearch("");setShowDone(true);}}
+              style={{padding:"5px 14px",borderRadius:5,fontSize:11,background:T.bg2,color:T.t1,border:`1px solid ${T.b2}`}}>Clear all filters</button>
           </div>
         )}
       </div>
@@ -3084,6 +3207,307 @@ function TaskDetailDrawer({ task, tasks, updateTasks, config, predictions, pushT
         <div style={{padding:"12px 16px",borderTop:`1px solid ${T.b1}`,display:"flex",gap:8,flexShrink:0,background:T.bg1}}>
           <button onClick={save} style={{flex:1,padding:"8px 0",borderRadius:6,background:T.acc,color:"#fff",fontSize:13,fontWeight:500,border:"none",cursor:"pointer"}}>Save changes</button>
           <button onClick={onClose} style={{padding:"8px 14px",borderRadius:6,background:T.bg2,color:T.t1,border:`1px solid ${T.b2}`,fontSize:13,cursor:"pointer"}}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── RETRO VIEW ───────────────────────────────────────────────────────────────
+function RetroView({ tasks, config, predictions, velocity }) {
+  const sprintEnd   = config.sprintEnd   || "2026-03-31";
+  const sprintStart = config.sprintStart || "2026-02-23";
+  const today       = fmtDate(new Date());
+
+  // ── Buckets ──────────────────────────────────────────────────────────────
+  const delivered   = tasks.filter(t => t.status === "Released");
+  const descoped    = tasks.filter(t => t.status === "Descoped");
+  const blocked     = tasks.filter(t => t.status === "Blocked");
+  const inFlight    = tasks.filter(t => !["Released","Descoped"].includes(t.status));
+  const atRisk      = inFlight.filter(t => {
+    const pe = taskPredictedEnd(t.id, predictions);
+    return pe && fmtDate(pe) > sprintEnd;
+  });
+
+  // Slipped = released tasks that finished after plannedEnd
+  const slipped = delivered.filter(t => t.actualEnd && t.plannedEnd && t.actualEnd > t.plannedEnd)
+    .map(t => ({...t, slipDays: Math.round((parseDate(t.actualEnd)-parseDate(t.plannedEnd))/86400000)}))
+    .sort((a,b) => b.slipDays - a.slipDays);
+
+  // On-time = released with no slip or early
+  const onTime = delivered.filter(t => !t.plannedEnd || !t.actualEnd || t.actualEnd <= t.plannedEnd);
+
+  // Delivery stats
+  const totalScoped  = tasks.filter(t => t.status !== "Descoped").length;
+  const deliveryRate = totalScoped > 0 ? Math.round((delivered.length / totalScoped)*100) : 0;
+  const p1Tasks      = tasks.filter(t => t.priority === "P1" && t.status !== "Descoped");
+  const p1Done       = p1Tasks.filter(t => t.status === "Released").length;
+  const totalEff     = delivered.reduce((s,t)=>s+["ios","and","be","wc","qa"].reduce((ss,l)=>ss+Number(t.effort?.[l]||0),0),0);
+  const avgSlip      = slipped.length ? Math.round(slipped.reduce((s,t)=>s+t.slipDays,0)/slipped.length) : 0;
+
+  // Per-person stats
+  const personStats = {};
+  tasks.forEach(t => {
+    ["ios","and","be","wc","qa"].forEach(l => {
+      const p = t.owners?.[l]; if(!p) return;
+      if(!personStats[p]) personStats[p] = {delivered:0,slipped:0,totalSlip:0,effort:0,descoped:0};
+      const eff = Number(t.effort?.[l]||0);
+      if(t.status==="Released")  { personStats[p].delivered++; personStats[p].effort+=eff; }
+      if(t.status==="Descoped")  personStats[p].descoped++;
+      const slip = t.actualEnd&&t.plannedEnd ? Math.round((parseDate(t.actualEnd)-parseDate(t.plannedEnd))/86400000) : 0;
+      if(t.status==="Released"&&slip>0) { personStats[p].slipped++; personStats[p].totalSlip+=slip; }
+    });
+  });
+
+  // Task delays log
+  const taskDelays = config.taskDelays || [];
+
+  // Print helper
+  const handlePrint = () => window.print();
+
+  const StatBox = ({label,value,sub,color}) => (
+    <div style={{background:T.bg1,border:`1px solid ${T.b1}`,borderRadius:8,padding:"14px 16px",textAlign:"center"}}>
+      <div style={{fontSize:9,color:T.t3,textTransform:"uppercase",letterSpacing:0.8,marginBottom:6}}>{label}</div>
+      <div style={{fontSize:26,fontWeight:700,color:color||T.t0,fontFamily:"'JetBrains Mono',monospace",lineHeight:1}}>{value}</div>
+      {sub&&<div style={{fontSize:10,color:T.t3,marginTop:4}}>{sub}</div>}
+    </div>
+  );
+
+  const TaskRow = ({t,badge,badgeColor}) => {
+    const pc = PRIORITY_COLOR[t.priority]||PRIORITY_COLOR["P3"];
+    const owners = ["ios","and","be","wc","qa"].map(l=>t.owners?.[l]).filter(Boolean);
+    const uniqueOwners = [...new Set(owners)];
+    return (
+      <div style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:`1px solid ${T.b0}`}}>
+        <span style={{fontSize:10,color:T.t3,fontFamily:"'JetBrains Mono',monospace",flexShrink:0,width:24}}>#{t.id}</span>
+        <span className="tag" style={{background:pc.bgCard,color:pc.bg,border:`1px solid ${pc.bg}30`,fontSize:9,flexShrink:0}}>{t.priority}</span>
+        <span style={{fontSize:12,color:T.t0,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name}</span>
+        <div style={{display:"flex",gap:3,flexShrink:0}}>
+          {uniqueOwners.slice(0,3).map(p=>{
+            const color=TEAM[p]?.bar||T.acc;
+            return <div key={p} title={p} style={{width:18,height:18,borderRadius:"50%",background:`${color}20`,border:`1.5px solid ${color}60`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,fontWeight:700,color}}>{p.slice(0,2).toUpperCase()}</div>;
+          })}
+        </div>
+        {badge&&<span style={{fontSize:10,fontFamily:"'JetBrains Mono',monospace",color:badgeColor||T.t2,fontWeight:600,flexShrink:0}}>{badge}</span>}
+      </div>
+    );
+  };
+
+  const Section = ({title,count,color,icon,children}) => (
+    <div style={{background:T.bg1,border:`1px solid ${T.b1}`,borderRadius:8,padding:16,marginBottom:12}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,paddingBottom:10,borderBottom:`1px solid ${T.b0}`}}>
+        <span style={{fontSize:14}}>{icon}</span>
+        <span style={{fontSize:12,fontWeight:600,color:color||T.t1}}>{title}</span>
+        {count!==undefined&&<span style={{marginLeft:"auto",fontSize:11,fontWeight:600,color:count>0?color:T.t3,background:count>0?`${color}15`:T.bg2,padding:"1px 8px",borderRadius:8,border:`1px solid ${count>0?`${color}35`:T.b1}`}}>{count}</span>}
+      </div>
+      {children}
+    </div>
+  );
+
+  return (
+    <div style={{padding:"24px",maxWidth:1100,margin:"0 auto",overflow:"auto",height:"calc(100vh - 52px)"}} className="fade-in">
+
+      {/* Header */}
+      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:20}}>
+        <div>
+          <div style={{fontSize:18,fontWeight:700,color:T.t0,letterSpacing:-0.5}}>Sprint Retrospective</div>
+          <div style={{fontSize:12,color:T.t2,marginTop:3}}>{sprintStart} → {sprintEnd} · Generated {today}</div>
+        </div>
+        <button className="btn" onClick={handlePrint} style={{padding:"6px 14px",borderRadius:6,background:T.bg2,color:T.t1,border:`1px solid ${T.b2}`,fontSize:11,cursor:"pointer"}}>🖨 Print / Export PDF</button>
+      </div>
+
+      {/* Sprint health verdict */}
+      <div style={{
+        background: deliveryRate>=80 ? `${T.p3}12` : deliveryRate>=50 ? `${T.p2}12` : T.p1bg,
+        border: `1px solid ${deliveryRate>=80 ? T.p3 : deliveryRate>=50 ? T.p2 : T.p1}40`,
+        borderRadius:10,padding:"14px 18px",marginBottom:20,
+        display:"flex",alignItems:"center",gap:12,
+      }}>
+        <span style={{fontSize:24}}>{deliveryRate>=80?"🟢":deliveryRate>=50?"🟡":"🔴"}</span>
+        <div>
+          <div style={{fontSize:14,fontWeight:600,color:T.t0,marginBottom:3}}>
+            {deliveryRate>=80?"Strong sprint — well executed":deliveryRate>=50?"Mixed sprint — some goals met":"Challenging sprint — needs reflection"}
+          </div>
+          <div style={{fontSize:12,color:T.t2}}>
+            Delivered {delivered.length}/{totalScoped} tasks ({deliveryRate}%) · P1 completion {p1Done}/{p1Tasks.length} · {totalEff}d total effort shipped · avg slip {avgSlip}d
+          </div>
+        </div>
+      </div>
+
+      {/* Stats row */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:8,marginBottom:20}}>
+        <StatBox label="Delivered"  value={delivered.length}  color={T.p3}  sub={`of ${totalScoped}`}/>
+        <StatBox label="Delivery %" value={`${deliveryRate}%`} color={deliveryRate>=80?T.p3:deliveryRate>=50?T.p2:T.p1}/>
+        <StatBox label="P1 Done"    value={`${p1Done}/${p1Tasks.length}`} color={p1Done===p1Tasks.length?T.p3:T.p1}/>
+        <StatBox label="Slipped"    value={slipped.length}    color={slipped.length>0?T.p1:T.p3} sub={slipped.length?`avg +${avgSlip}d`:"none"}/>
+        <StatBox label="Descoped"   value={descoped.length}   color={descoped.length>0?T.p2:T.t3}/>
+        <StatBox label="Effort Shipped" value={`${totalEff}d`} color={T.acc}/>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+        {/* Left column */}
+        <div>
+          {/* Delivered */}
+          <Section title="Delivered" count={delivered.length} color={T.p3} icon="✅">
+            {delivered.length===0
+              ? <div style={{fontSize:12,color:T.t3,fontStyle:"italic"}}>Nothing released this sprint</div>
+              : delivered.map(t=>(
+                  <TaskRow key={t.id} t={t}
+                    badge={t.actualEnd ? t.actualEnd.slice(5) : undefined}
+                    badgeColor={T.p3}/>
+                ))
+            }
+          </Section>
+
+          {/* Slipped */}
+          <Section title="Delivered late" count={slipped.length} color={T.p1} icon="⏱">
+            {slipped.length===0
+              ? <div style={{fontSize:12,color:T.t3,fontStyle:"italic"}}>All tasks on time</div>
+              : slipped.map(t=>(
+                  <TaskRow key={t.id} t={t}
+                    badge={`+${t.slipDays}d slip`}
+                    badgeColor={T.p1}/>
+                ))
+            }
+          </Section>
+
+          {/* Still in flight */}
+          {inFlight.length>0&&(
+            <Section title="Still in flight" count={inFlight.length} color={T.p2} icon="🔄">
+              {inFlight.map(t=>{
+                const pe=taskPredictedEnd(t.id,predictions);
+                const sc=STATUS_COLOR[t.status]||T.sDo;
+                return (
+                  <div key={t.id} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:`1px solid ${T.b0}`}}>
+                    <span style={{fontSize:10,color:T.t3,fontFamily:"'JetBrains Mono',monospace",width:24,flexShrink:0}}>#{t.id}</span>
+                    <span style={{fontSize:12,color:T.t0,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name}</span>
+                    <span className="tag" style={{background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`,fontSize:9}}>{t.status}</span>
+                    {pe&&<span style={{fontSize:10,fontFamily:"'JetBrains Mono',monospace",color:fmtDate(pe)>sprintEnd?T.p1:T.p3,flexShrink:0}}>{fmtDate(pe).slice(5)}</span>}
+                  </div>
+                );
+              })}
+            </Section>
+          )}
+        </div>
+
+        {/* Right column */}
+        <div>
+          {/* Descoped */}
+          <Section title="Descoped / cut" count={descoped.length} color={T.t3} icon="✂️">
+            {descoped.length===0
+              ? <div style={{fontSize:12,color:T.t3,fontStyle:"italic"}}>Nothing descoped</div>
+              : descoped.map(t=>{
+                  const totalTaskEff=["ios","and","be","wc","qa"].reduce((s,l)=>s+Number(t.effort?.[l]||0),0);
+                  return <TaskRow key={t.id} t={t} badge={totalTaskEff?`${totalTaskEff}d saved`:undefined} badgeColor={T.t2}/>;
+                })
+            }
+          </Section>
+
+          {/* Blocked tasks */}
+          {blocked.length>0&&(
+            <Section title="Still blocked" count={blocked.length} color={T.p1} icon="🚧">
+              {blocked.map(t=>(
+                <TaskRow key={t.id} t={t}
+                  badge={t.notes||undefined}
+                  badgeColor={T.t2}/>
+              ))}
+            </Section>
+          )}
+
+          {/* Team performance */}
+          <Section title="Team performance" icon="👥" color={T.acc}>
+            {Object.entries(personStats).length===0
+              ? <div style={{fontSize:12,color:T.t3,fontStyle:"italic"}}>No data yet</div>
+              : <div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 50px 50px 60px 50px",gap:4,marginBottom:6}}>
+                    {["Person","Deliv","Effort","Slip","Slow"].map(h=>(
+                      <div key={h} style={{fontSize:9,color:T.t3,textTransform:"uppercase",letterSpacing:0.5,fontWeight:600}}>{h}</div>
+                    ))}
+                  </div>
+                  {Object.entries(personStats).sort((a,b)=>b[1].delivered-a[1].delivered).map(([person,s])=>{
+                    const color=TEAM[person]?.bar||T.acc;
+                    const vel=velocity[person];
+                    const avgPersonSlip=s.slipped>0?Math.round(s.totalSlip/s.slipped):0;
+                    return (
+                      <div key={person} style={{display:"grid",gridTemplateColumns:"1fr 50px 50px 60px 50px",gap:4,alignItems:"center",padding:"5px 0",borderBottom:`1px solid ${T.b0}`}}>
+                        <div style={{display:"flex",alignItems:"center",gap:6}}>
+                          <div style={{width:18,height:18,borderRadius:"50%",background:`${color}20`,border:`1.5px solid ${color}60`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,fontWeight:700,color}}>{person.slice(0,2).toUpperCase()}</div>
+                          <span style={{fontSize:12,color:T.t0}}>{person}</span>
+                        </div>
+                        <span style={{fontSize:11,color:T.p3,fontFamily:"'JetBrains Mono',monospace",fontWeight:600}}>{s.delivered}</span>
+                        <span style={{fontSize:11,color:T.acc,fontFamily:"'JetBrains Mono',monospace"}}>{s.effort}d</span>
+                        <span style={{fontSize:11,fontFamily:"'JetBrains Mono',monospace",color:avgPersonSlip>3?T.p1:avgPersonSlip>0?T.p2:T.p3}}>
+                          {s.slipped>0?`+${avgPersonSlip}d avg`:"on time"}
+                        </span>
+                        <span style={{fontSize:11,color:vel?.avgSlip>3?T.p1:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>
+                          {vel?.count>=2?`${vel.avgSlip}d`:"—"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+            }
+          </Section>
+
+          {/* Delay log */}
+          {taskDelays.length>0&&(
+            <Section title="Delay log" count={taskDelays.length} color={T.p2} icon="📋">
+              <div style={{fontSize:10,color:T.t3,marginBottom:8}}>Logged mid-sprint scope changes & delays</div>
+              {taskDelays.slice().reverse().map((d,i)=>{
+                const t=tasks.find(x=>x.id===d.taskId);
+                return (
+                  <div key={i} style={{padding:"6px 0",borderBottom:`1px solid ${T.b0}`}}>
+                    <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:2}}>
+                      <span style={{fontSize:10,color:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>{d.date?.slice(5)}</span>
+                      <span style={{fontSize:11,color:T.t0}}>{t?`#${t.id} ${t.name.slice(0,30)}`:d.taskId}</span>
+                      <span style={{fontSize:10,color:T.p2,fontFamily:"'JetBrains Mono',monospace",marginLeft:"auto"}}>+{d.days}d</span>
+                    </div>
+                    {d.reason&&<div style={{fontSize:10,color:T.t2,paddingLeft:0,fontStyle:"italic"}}>{d.reason}</div>}
+                  </div>
+                );
+              })}
+            </Section>
+          )}
+
+          {/* Velocity trend */}
+          {Object.keys(velocity).length>0&&(
+            <Section title="Velocity trends (cross-sprint)" icon="📈" color={T.acc}>
+              <div style={{fontSize:10,color:T.t3,marginBottom:8}}>Based on actuals across all sprints in this project</div>
+              {Object.entries(velocity).filter(([,v])=>v.count>=2).map(([person,v])=>{
+                const color=TEAM[person]?.bar||T.acc;
+                return (
+                  <div key={person} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 0",borderBottom:`1px solid ${T.b0}`}}>
+                    <div style={{width:18,height:18,borderRadius:"50%",background:`${color}20`,border:`1.5px solid ${color}60`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,fontWeight:700,color}}>{person.slice(0,2).toUpperCase()}</div>
+                    <span style={{fontSize:12,color:T.t0,flex:1}}>{person}</span>
+                    <span style={{fontSize:10,color:T.t3}}>{v.count} sprints ·</span>
+                    <span style={{fontSize:11,fontFamily:"'JetBrains Mono',monospace",color:v.avgSlip>3?T.p1:v.avgSlip>0?T.p2:T.p3,fontWeight:600}}>
+                      {v.avgSlip>0?`+${v.avgSlip}d avg slip`:"consistently on time"}
+                    </span>
+                  </div>
+                );
+              })}
+              {Object.values(velocity).filter(v=>v.count>=2).length===0&&(
+                <div style={{fontSize:12,color:T.t3,fontStyle:"italic"}}>Need 2+ sprints of data for trends</div>
+              )}
+            </Section>
+          )}
+        </div>
+      </div>
+
+      {/* Retrospective prompts */}
+      <div style={{background:T.bg1,border:`1px solid ${T.b1}`,borderRadius:8,padding:20,marginTop:4}}>
+        <div style={{fontSize:12,fontWeight:600,color:T.t1,marginBottom:14}}>💬 Retrospective prompts</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+          {[
+            {icon:"🟢",label:"What went well?",hint:`${delivered.length} tasks shipped. ${p1Done===p1Tasks.length?"All P1s done.":""} ${slipped.length===0?"Zero slip — great estimation.":""}`},
+            {icon:"🔴",label:"What needs improvement?",hint:`${slipped.length>0?`${slipped.length} tasks slipped (avg +${avgSlip}d). `:""}${descoped.length>0?`${descoped.length} tasks descoped mid-sprint. `:""}${blocked.length>0?`${blocked.length} items still blocked.`:""}`},
+            {icon:"🔵",label:"What to try next sprint?",hint:`${atRisk.length>0?`${atRisk.length} tasks at risk — review estimation buffer. `:""}${avgSlip>3?"Consider adding buffer days for high-effort tasks. ":""}${descoped.length>2?"Scope planning may need refinement.":""}`},
+          ].map(({icon,label,hint})=>(
+            <div key={label} style={{background:T.bg0,borderRadius:6,padding:12,border:`1px solid ${T.b1}`}}>
+              <div style={{fontSize:11,fontWeight:600,color:T.t0,marginBottom:6}}>{icon} {label}</div>
+              <div style={{fontSize:11,color:T.t2,lineHeight:1.5}}>{hint||"Add your team's notes here"}</div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
