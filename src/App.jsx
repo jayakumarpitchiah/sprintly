@@ -1259,7 +1259,7 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
       </div>
       {calendarOpen&&<TeamCalendarPanel config={config} updateConfig={updateConfig} tasks={tasks} onClose={()=>setCalendarOpen(false)}/>}
       {/* Task detail drawer (C2+C3) */}
-      {taskDrawerTask!==null&&<TaskDetailDrawer task={tasks.find(t=>t.id===taskDrawerTask)||tasks[0]} tasks={tasks} updateTasks={updateTasks} config={config} predictions={predictions} pushToast={pushToast} onClose={()=>setTaskDrawerTask(null)}/>}
+      {taskDrawerTask!==null&&tasks.find(t=>t.id===taskDrawerTask)&&<TaskDetailDrawer task={tasks.find(t=>t.id===taskDrawerTask)} tasks={tasks} updateTasks={updateTasks} config={config} predictions={predictions} pushToast={pushToast} onClose={()=>setTaskDrawerTask(null)}/> }
     </div>
     <Toast toasts={toasts}/>
     <ShortcutsOverlay/>
