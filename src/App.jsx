@@ -89,6 +89,24 @@ const STATUS_COLOR = {
   "Descoped": { bg:"#f4f4f4", text:"#adb5bd", border:"#dee2e6" },
 };
 
+// Sub-tags: lightweight badges within a status (don't affect prediction engine)
+const SUB_TAGS = {
+  "In Dev": [
+    { id:"wip",     label:"🔨 WIP",            bg:"#eef4ff", text:"#4a6fa5", border:"#b8cce8" },
+    { id:"review",  label:"👀 Review",          bg:"#fff8e6", text:"#a07020", border:"#e8d090" },
+    { id:"blocked", label:"🚫 Blocked",         bg:"#fff0f0", text:"#c0404a", border:"#f0b0b0" },
+  ],
+  "Dev Done": [
+    { id:"wip",     label:"🔨 WIP",            bg:"#eef4ff", text:"#4a6fa5", border:"#b8cce8" },
+    { id:"review",  label:"👀 Review",          bg:"#fff8e6", text:"#a07020", border:"#e8d090" },
+  ],
+  "In QA": [
+    { id:"testing", label:"🧪 Testing",         bg:"#f0fbf5", text:"#2a7a50", border:"#90d8b0" },
+    { id:"bugfix",  label:"🐛 Bug Fix",         bg:"#fff0f0", text:"#c0404a", border:"#f0b0b0" },
+    { id:"retest",  label:"🔁 Retest",          bg:"#f5f0ff", text:"#6040a0", border:"#c0a8e8" },
+  ],
+};
+
 const TEAM = {
   Hari:     { bar:"#4a6fa5", lane:"#f5f8fc", func:"iOS" },
   Sam:      { bar:"#8a6a3a", lane:"#fdf9f5", func:"Android" },
@@ -441,145 +459,258 @@ function migrateConfig(cfg) {
 
 // ─── TEAM CALENDAR PANEL ──────────────────────────────────────────────────────
 function TeamCalendarPanel({ config, updateConfig, tasks, onClose }) {
-  const [activeTab, setActiveTab] = useState("calendar"); // "calendar" | "delays"
-  const [selectedPerson, setSelectedPerson] = useState(TEAM_NAMES[0]);
-  const [newEvent, setNewEvent] = useState({ date:"", type:"l2", reason:"" });
-  const [newDelay, setNewDelay] = useState({ taskId:"", lane:"all", effortDelta:1, reason:"", date:fmtDate(new Date()) });
+  const [activeTab, setActiveTab]   = useState("calendar");
+  const [newDelay, setNewDelay]     = useState({ taskId:"", lane:"all", effortDelta:1, reason:"", date:fmtDate(new Date()) });
+  const [addCell, setAddCell]       = useState(null); // { person, date } — active add popover
+  const [addType, setAddType]       = useState("l2");
+  const [addReason, setAddReason]   = useState("");
 
-  const personEvents = (config.calendarEvents||[])
-    .filter(e=>e.person===selectedPerson)
-    .sort((a,b)=>a.date.localeCompare(b.date));
+  const sprintStart  = config.sprintStart  || "2026-02-23";
+  const sprintEndStr = config.sprintEnd    || "2026-03-31";
 
-  const l2Events      = personEvents.filter(e=>e.type==="l2");
-  const plannedEvents = personEvents.filter(e=>e.type==="planned");
-  const unplannedEvents = personEvents.filter(e=>e.type==="unplanned");
+  // Sprint working days (excl weekends + holidays)
+  const sprintDays = useMemo(() => {
+    const days = [];
+    let cur = parseDate(sprintStart);
+    const end = parseDate(sprintEndStr);
+    while (cur <= end) {
+      if (!isWeekend(cur)) days.push(fmtDate(cur));
+      cur = addDays(cur, 1);
+    }
+    return days;
+  }, [sprintStart, sprintEndStr]);
 
-  const addEvent = () => {
-    if (!newEvent.date) return;
-    updateConfig(c=>{
-      // Prevent duplicate: same person + date + type
-      const exists = (c.calendarEvents||[]).some(
-        e=>e.person===selectedPerson && e.date===newEvent.date && e.type===newEvent.type
-      );
-      if (exists) return c;
-      return { ...c, calendarEvents:[...(c.calendarEvents||[]),{ person:selectedPerson, ...newEvent }] };
+  // Week groups for header
+  const weekGroups = useMemo(() => {
+    const groups = []; let wk = null, wkStart = 0;
+    sprintDays.forEach((d, i) => {
+      const dt  = parseDate(d);
+      const mon = fmtDate(new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() - (dt.getDay()||7) + 1));
+      if (mon !== wk) { if (wk) groups.push({label:wk,start:wkStart,end:i-1}); wk=mon; wkStart=i; }
     });
-    setNewEvent({ date:"", type:"l2", reason:"" });
+    if (wk) groups.push({label:wk,start:wkStart,end:sprintDays.length-1});
+    return groups;
+  }, [sprintDays]);
+
+  const TYPE_CFG = {
+    l2:        { label:"L2",       bg:"#eef4ff", text:"#4a6fa5", border:"#b8cce8", icon:"L2" },
+    planned:   { label:"Planned",  bg:T.p3bg,    text:T.p3,      border:T.sQA.border, icon:"🏖" },
+    unplanned: { label:"Sick",     bg:T.p1bg,    text:T.p1,      border:T.sBlk.border, icon:"🤒" },
   };
 
-  const removeEvent = (idx) => {
-    const personIdxs = (config.calendarEvents||[])
-      .map((e,i)=>e.person===selectedPerson?i:-1).filter(i=>i!==-1);
-    const globalIdx = personIdxs[idx];
-    updateConfig(c=>({
-      ...c,
-      calendarEvents:c.calendarEvents.filter((_,i)=>i!==globalIdx)
-    }));
+  const getCell = (person, date) =>
+    (config.calendarEvents||[]).filter(e => e.person===person && e.date===date);
+
+  const toggleCell = (person, date, type) => {
+    const exists = (config.calendarEvents||[]).some(
+      e => e.person===person && e.date===date && e.type===type
+    );
+    if (exists) {
+      updateConfig(c => ({ ...c, calendarEvents: c.calendarEvents.filter(
+        e => !(e.person===person && e.date===date && e.type===type)
+      )}));
+    } else {
+      updateConfig(c => ({ ...c, calendarEvents: [...(c.calendarEvents||[]),
+        { person, date, type, reason: addReason||undefined }
+      ]}));
+    }
+    setAddCell(null); setAddReason("");
+  };
+
+  const removeEvent = (person, date, type) => {
+    updateConfig(c => ({ ...c, calendarEvents: c.calendarEvents.filter(
+      e => !(e.person===person && e.date===date && e.type===type)
+    )}));
   };
 
   const addDelay = () => {
     if (!newDelay.taskId||!newDelay.effortDelta) return;
-    updateConfig(c=>({
-      ...c,
-      taskDelays:[...(c.taskDelays||[]),{
-        taskId:Number(newDelay.taskId),
-        lane:newDelay.lane||"all",
-        effortDelta:Number(newDelay.effortDelta),
-        reason:newDelay.reason,
-        date:newDelay.date,
-      }]
-    }));
+    updateConfig(c => ({ ...c, taskDelays:[...(c.taskDelays||[]),{
+      taskId:Number(newDelay.taskId), lane:newDelay.lane||"all",
+      effortDelta:Number(newDelay.effortDelta), reason:newDelay.reason, date:newDelay.date,
+    }]}));
     setNewDelay({ taskId:"", lane:"all", effortDelta:1, reason:"", date:fmtDate(new Date()) });
   };
-
-  const removeDelay = (i) => updateConfig(c=>({...c,taskDelays:c.taskDelays.filter((_,j)=>j!==i)}));
+  const removeDelay = i => updateConfig(c => ({...c, taskDelays:c.taskDelays.filter((_,j)=>j!==i)}));
 
   const inp = {background:T.bg2,color:T.t0,border:`1px solid ${T.b2}`,borderRadius:5,padding:"6px 9px",fontSize:12,fontFamily:"inherit"};
   const sel = {...inp,cursor:"pointer"};
 
-  const TYPE_COLOR = {
-    l2:        { bg:"#f0f4ff", text:"#5a6fa5", border:"#c0cce8", label:"L2" },
-    planned:   { bg:T.p3bg,   text:T.p3,      border:T.sQA.border, label:"Planned leave" },
-    unplanned: { bg:T.p1bg,   text:T.p1,      border:T.sBlk.border, label:"Unplanned / sick" },
-  };
-
-  const EventGroup = ({ title, events, startIdx, color }) => (
-    <div style={{marginBottom:14}}>
-      <div style={{fontSize:10,color:color.text,fontWeight:600,textTransform:"uppercase",letterSpacing:0.6,marginBottom:6,display:"flex",alignItems:"center",gap:6}}>
-        <span style={{background:color.bg,border:`1px solid ${color.border}`,borderRadius:3,padding:"1px 6px"}}>{title}</span>
-        <span style={{color:T.t3,fontWeight:400}}>{events.length} day{events.length!==1?"s":""}</span>
-      </div>
-      {events.length===0
-        ? <div style={{fontSize:11,color:T.t3,fontStyle:"italic",paddingLeft:4}}>None</div>
-        : <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
-            {events.map((e,i)=>(
-              <div key={`${e.date}-${e.type}-${i}`} style={{display:"flex",alignItems:"center",gap:4,background:color.bg,border:`1px solid ${color.border}`,borderRadius:5,padding:"3px 8px"}}>
-                <span style={{fontSize:11,fontFamily:"'JetBrains Mono',monospace",color:color.text}}>{e.date.slice(5)}</span>
-                {e.reason&&<span style={{fontSize:10,color:T.t2}}>· {e.reason.slice(0,20)}</span>}
-                <button className="btn" onClick={()=>removeEvent(startIdx+i)} style={{background:"transparent",color:T.t3,border:"none",fontSize:12,padding:"0 2px",lineHeight:1}} title="Remove">×</button>
-              </div>
-            ))}
-          </div>
-      }
-    </div>
-  );
+  const COL_W = 36;
+  const LABEL_W = 100;
+  const today = fmtDate(new Date());
 
   return (
     <div style={{position:"fixed",inset:0,zIndex:300,display:"flex"}}>
       <div style={{flex:1,background:"#00000030"}} onClick={onClose}/>
-      <div style={{width:480,background:T.bg0,borderLeft:`1px solid ${T.b1}`,display:"flex",flexDirection:"column",height:"100%"}}>
+      <div style={{width:"calc(100vw - 200px)",maxWidth:1200,minWidth:700,background:T.bg0,borderLeft:`1px solid ${T.b1}`,display:"flex",flexDirection:"column",height:"100%"}}>
+
         {/* Header */}
-        <div style={{padding:"16px 20px",borderBottom:`1px solid ${T.b1}`,background:T.bg1,flexShrink:0}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+        <div style={{padding:"14px 20px",borderBottom:`1px solid ${T.b1}`,background:T.bg1,flexShrink:0}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
             <div>
               <div style={{fontSize:13,fontWeight:600,color:T.t0}}>Team Calendar</div>
-              <div style={{fontSize:10,color:T.t2,marginTop:2}}>L2 rota · leave · delays — all update timeline predictions automatically</div>
+              <div style={{fontSize:10,color:T.t2,marginTop:2}}>Click any cell to toggle L2 / leave. All changes update timeline predictions automatically.</div>
             </div>
             <button className="btn" onClick={onClose} style={{background:"transparent",color:T.t2,fontSize:18,padding:"2px 8px",border:`1px solid ${T.b1}`,borderRadius:4}}>×</button>
           </div>
           {/* Tabs */}
           <div style={{display:"flex",gap:2}}>
-            {[["calendar","📅 Person Calendar"],["delays","⚠ Task Delays"]].map(([id,label])=>(
-              <button key={id} className="btn" onClick={()=>setActiveTab(id)} style={{padding:"5px 14px",borderRadius:5,fontSize:11,fontWeight:activeTab===id?500:400,background:activeTab===id?T.bg3:"transparent",color:activeTab===id?T.t0:T.t2,border:`1px solid ${activeTab===id?T.b2:"transparent"}`}}>{label}</button>
+            {[["calendar","📅 Calendar Grid"],["delays","⚠ Task Delays"]].map(([id,label])=>(
+              <button key={id} className="btn" onClick={()=>setActiveTab(id)} style={{
+                padding:"5px 14px",borderRadius:5,fontSize:11,fontWeight:activeTab===id?500:400,
+                background:activeTab===id?T.bg3:"transparent",color:activeTab===id?T.t0:T.t2,
+                border:`1px solid ${activeTab===id?T.b2:"transparent"}`}}>{label}</button>
             ))}
           </div>
+          {/* Legend */}
+          {activeTab==="calendar"&&(
+            <div style={{display:"flex",gap:10,marginTop:8,alignItems:"center"}}>
+              {Object.entries(TYPE_CFG).map(([k,v])=>(
+                <div key={k} style={{display:"flex",alignItems:"center",gap:4,fontSize:10,color:T.t2}}>
+                  <div style={{width:16,height:12,background:v.bg,border:`1px solid ${v.border}`,borderRadius:2,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,color:v.text,fontWeight:700}}>{v.icon}</div>
+                  {v.label}
+                </div>
+              ))}
+              <div style={{display:"flex",alignItems:"center",gap:4,fontSize:10,color:T.t2}}>
+                <div style={{width:16,height:12,background:T.holBg,border:`1px solid ${T.hol}40`,borderRadius:2,display:"flex",alignItems:"center",justifyContent:"center",fontSize:8}}>🎉</div>
+                Holiday
+              </div>
+              <span style={{fontSize:10,color:T.t3,marginLeft:"auto"}}>Click cell to add · Click badge to remove</span>
+            </div>
+          )}
         </div>
 
-        <div style={{flex:1,overflowY:"auto",padding:20}}>
+        <div style={{flex:1,overflow:"auto"}}>
           {activeTab==="calendar" && (
-            <>
-              {/* Person selector */}
-              <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:18}}>
-                {TEAM_NAMES.map(p=>{
-                  const isSel=p===selectedPerson;
-                  const color=TEAM[p]?.bar||T.acc;
-                  const evCount=(config.calendarEvents||[]).filter(e=>e.person===p).length;
+            <div style={{minWidth:LABEL_W+sprintDays.length*COL_W+40,padding:"0 20px 20px"}}>
+
+              {/* Week header */}
+              <div style={{display:"flex",marginLeft:LABEL_W,borderBottom:`1px solid ${T.b1}`,position:"sticky",top:0,zIndex:10,background:T.bg0}}>
+                {weekGroups.map((wg,wi)=>{
+                  const dt = parseDate(wg.label);
+                  const label = dt.toLocaleDateString("en-GB",{day:"numeric",month:"short"});
+                  const count = wg.end-wg.start+1;
                   return (
-                    <button key={p} className="btn" onClick={()=>setSelectedPerson(p)} style={{padding:"4px 10px",borderRadius:10,fontSize:11,fontWeight:isSel?500:400,background:isSel?`${color}18`:"transparent",color:isSel?color:T.t2,border:`1px solid ${isSel?`${color}60`:T.b1}`,display:"flex",alignItems:"center",gap:5}}>
-                      {p}
-                      {evCount>0&&<span style={{fontSize:9,background:isSel?`${color}30`:T.bg2,color:isSel?color:T.t3,borderRadius:8,padding:"0 4px",fontFamily:"'JetBrains Mono',monospace"}}>{evCount}</span>}
-                    </button>
+                    <div key={wi} style={{width:count*COL_W,textAlign:"center",padding:"8px 0",fontSize:9,color:T.t2,fontWeight:600,
+                      borderRight:`1px solid ${T.b0}`,background:wi%2===0?T.bg0:T.bg1,
+                      overflow:"hidden",whiteSpace:"nowrap",textTransform:"uppercase",letterSpacing:0.5}}>
+                      W{wi+1} · {label}
+                    </div>
                   );
                 })}
               </div>
 
-              {/* Event groups */}
-              <EventGroup title="L2 Support" events={l2Events} startIdx={0} color={TYPE_COLOR.l2}/>
-              <EventGroup title="Planned Leave" events={plannedEvents} startIdx={l2Events.length} color={TYPE_COLOR.planned}/>
-              <EventGroup title="Unplanned / Sick" events={unplannedEvents} startIdx={l2Events.length+plannedEvents.length} color={TYPE_COLOR.unplanned}/>
+              {/* Day header */}
+              <div style={{display:"flex",marginLeft:LABEL_W,borderBottom:`1px solid ${T.b1}`,position:"sticky",top:28,zIndex:10,background:T.bg0}}>
+                {sprintDays.map(d=>{
+                  const dt=parseDate(d);
+                  const isToday=d===today;
+                  const isHol=(config.holidays||[]).includes(d);
+                  return (
+                    <div key={d} style={{width:COL_W,minWidth:COL_W,textAlign:"center",padding:"4px 0",fontSize:9,
+                      color:isHol?T.hol:isToday?T.acc:T.t2,fontWeight:isToday||isHol?700:400,
+                      background:isHol?T.holBg:isToday?`${T.acc}10`:"transparent",
+                      borderRight:`1px solid ${T.b0}`,fontFamily:"'JetBrains Mono',monospace",
+                      borderBottom:isToday?`2px solid ${T.acc}`:isHol?`2px solid ${T.hol}`:"none",
+                    }}>
+                      {dt.getDate()}<br/>
+                      <span style={{fontSize:7,opacity:0.7}}>{["Mo","Tu","We","Th","Fr"][dt.getDay()-1]}</span>
+                    </div>
+                  );
+                })}
+              </div>
 
-              {/* Unified bulk event adder */}
-              <BulkEventAdder person={selectedPerson} config={config} updateConfig={updateConfig}/>
-            </>
+              {/* Person rows — grouped by function */}
+              {FUNC_GROUPS.map(g=>{
+                const members = TEAM_NAMES.filter(p => TEAM[p]?.func===g.key || TEAM[p]?.shared===g.key);
+                if (!members.length) return null;
+                return (
+                  <div key={g.key}>
+                    {/* Group header row */}
+                    <div style={{display:"flex",alignItems:"center",background:T.bg2,borderTop:`2px solid ${g.color}30`,borderBottom:`1px solid ${T.b1}`}}>
+                      <div style={{width:LABEL_W,minWidth:LABEL_W,padding:"5px 12px",display:"flex",alignItems:"center",gap:6}}>
+                        <div style={{width:3,height:12,background:g.color,borderRadius:2}}/>
+                        <span style={{fontSize:9,fontWeight:700,color:g.color,textTransform:"uppercase",letterSpacing:0.8}}>{g.label}</span>
+                      </div>
+                      {/* Holiday indicators in group header */}
+                      {sprintDays.map(d=>{
+                        const isHol=(config.holidays||[]).includes(d);
+                        return (
+                          <div key={d} style={{width:COL_W,minWidth:COL_W,height:18,
+                            background:isHol?T.holBg:"transparent",
+                            borderRight:`1px solid ${T.b0}`,
+                            display:"flex",alignItems:"center",justifyContent:"center",fontSize:8}}>
+                            {isHol?"🎉":""}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Member rows */}
+                    {members.map((person,pi)=>{
+                      const color=TEAM[person]?.bar||T.acc;
+                      const isShared=TEAM[person]?.shared&&TEAM[person]?.func!==g.key;
+                      return (
+                        <div key={person} style={{display:"flex",alignItems:"stretch",borderBottom:`1px solid ${T.b0}`,background:pi%2===0?T.bg0:T.bg1,minHeight:36}}>
+                          {/* Person label */}
+                          <div style={{width:LABEL_W,minWidth:LABEL_W,padding:"0 12px",display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
+                            <div style={{width:20,height:20,borderRadius:"50%",background:`${color}20`,border:`1.5px solid ${color}60`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,fontWeight:700,color,flexShrink:0}}>
+                              {person.slice(0,2).toUpperCase()}
+                            </div>
+                            <div>
+                              <div style={{fontSize:11,fontWeight:500,color:T.t0,whiteSpace:"nowrap"}}>{person}</div>
+                              {isShared&&<div style={{fontSize:8,color:T.t3}}>shared</div>}
+                            </div>
+                          </div>
+
+                          {/* Day cells */}
+                          {sprintDays.map(d=>{
+                            const cells=getCell(person,d);
+                            const isHol=(config.holidays||[]).includes(d);
+                            const isToday=d===today;
+                            const isActive=addCell?.person===person&&addCell?.date===d;
+                            const cellBg=isActive?`${T.acc}15`:isHol?T.holBg:isToday?`${T.acc}06`:"transparent";
+                            return (
+                              <div key={d}
+                                onClick={()=>{if(!isHol){setAddCell(isActive?null:{person,date:d});setAddType("l2");setAddReason("");}}}
+                                style={{width:COL_W,minWidth:COL_W,borderRight:`1px solid ${T.b0}`,
+                                  background:cellBg,cursor:isHol?"default":"pointer",
+                                  display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+                                  gap:2,padding:"3px 2px",position:"relative",
+                                  outline:isActive?`2px solid ${T.acc}`:"none",outlineOffset:-2,
+                                }}
+                                title={isHol?"Holiday":`${person} · ${d}`}>
+                                {isToday&&<div style={{position:"absolute",top:0,left:"50%",width:1,height:"100%",background:T.acc,opacity:0.3,pointerEvents:"none"}}/>}
+                                {cells.map((e,ei)=>{
+                                  const tc=TYPE_CFG[e.type]||TYPE_CFG.l2;
+                                  return (
+                                    <div key={ei}
+                                      onClick={ev=>{ev.stopPropagation();removeEvent(person,d,e.type);}}
+                                      title={`${tc.label}${e.reason?` · ${e.reason}`:""} — click to remove`}
+                                      style={{fontSize:7,fontWeight:700,padding:"1px 3px",borderRadius:2,
+                                        background:tc.bg,color:tc.text,border:`1px solid ${tc.border}`,
+                                        cursor:"pointer",whiteSpace:"nowrap",lineHeight:1.4,
+                                      }}>{tc.icon}</div>
+                                  );
+                                })}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
           )}
 
           {activeTab==="delays" && (
-            <>
+            <div style={{padding:20}}>
               <div style={{fontSize:11,color:T.t2,marginBottom:14,lineHeight:1.5}}>
                 Log a task delay to add extra effort days to the prediction engine. The timeline recalculates automatically and the delay is recorded for retro.
               </div>
-
-              {/* Existing delays */}
               {(config.taskDelays||[]).length===0
                 ? <div style={{fontSize:12,color:T.t3,fontStyle:"italic",marginBottom:16}}>No delays logged yet</div>
                 : (config.taskDelays||[]).map((d,i)=>{
@@ -599,8 +730,6 @@ function TeamCalendarPanel({ config, updateConfig, tasks, onClose }) {
                     );
                   })
               }
-
-              {/* Add delay form */}
               <div style={{background:T.bg1,border:`1px solid ${T.b1}`,borderRadius:8,padding:14,marginTop:8}}>
                 <div style={{fontSize:10,color:T.t2,fontWeight:500,textTransform:"uppercase",letterSpacing:0.5,marginBottom:10}}>Log new delay</div>
                 <div style={{marginBottom:8}}>
@@ -615,17 +744,14 @@ function TeamCalendarPanel({ config, updateConfig, tasks, onClose }) {
                 <div style={{marginBottom:8}}>
                   <label style={{fontSize:10,color:T.t2,display:"block",marginBottom:4}}>Affected lane</label>
                   <select value={newDelay.lane||"all"} onChange={e=>setNewDelay(n=>({...n,lane:e.target.value}))} style={{...sel,width:"100%"}}>
-                    <option value="all">All lanes (entire task delayed)</option>
-                    <option value="ios">iOS</option>
-                    <option value="and">Android</option>
-                    <option value="be">Backend</option>
-                    <option value="wc">Web Client</option>
-                    <option value="qa">QA</option>
+                    <option value="all">All lanes</option>
+                    <option value="ios">iOS</option><option value="and">Android</option>
+                    <option value="be">Backend</option><option value="wc">Web Client</option><option value="qa">QA</option>
                   </select>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
                   <div>
-                    <label style={{fontSize:10,color:T.t2,display:"block",marginBottom:4}}>Extra days needed</label>
+                    <label style={{fontSize:10,color:T.t2,display:"block",marginBottom:4}}>Extra days</label>
                     <input type="number" min={0.5} step={0.5} value={newDelay.effortDelta} onChange={e=>setNewDelay(n=>({...n,effortDelta:e.target.value}))} style={{...inp,width:"100%"}}/>
                   </div>
                   <div>
@@ -635,17 +761,41 @@ function TeamCalendarPanel({ config, updateConfig, tasks, onClose }) {
                 </div>
                 <div style={{marginBottom:10}}>
                   <label style={{fontSize:10,color:T.t2,display:"block",marginBottom:4}}>Reason (for retro)</label>
-                  <input type="text" value={newDelay.reason} onChange={e=>setNewDelay(n=>({...n,reason:e.target.value}))} placeholder="e.g. API contract changed, dependency blocked, scope crept…" style={{...inp,width:"100%"}}/>
+                  <input type="text" value={newDelay.reason} onChange={e=>setNewDelay(n=>({...n,reason:e.target.value}))} placeholder="e.g. API contract changed, dependency blocked…" style={{...inp,width:"100%"}}/>
                 </div>
-                <button className="btn" onClick={addDelay} disabled={!newDelay.taskId||!newDelay.effortDelta} style={{padding:"7px 16px",borderRadius:5,background:newDelay.taskId&&newDelay.effortDelta?T.p1:"#ccc",color:"#fff",border:"none",fontSize:12,fontWeight:500}}>Log delay</button>
+                <button className="btn" onClick={addDelay} disabled={!newDelay.taskId||!newDelay.effortDelta}
+                  style={{padding:"7px 16px",borderRadius:5,background:newDelay.taskId&&newDelay.effortDelta?T.p1:"#ccc",color:"#fff",border:"none",fontSize:12,fontWeight:500}}>Log delay</button>
               </div>
-            </>
+            </div>
           )}
         </div>
+
+        {/* Add-cell popover (floats above footer) */}
+        {addCell && (
+          <div style={{padding:"12px 20px",borderTop:`1px solid ${T.b1}`,background:T.bg1,flexShrink:0}}>
+            <div style={{fontSize:11,color:T.t1,marginBottom:8,fontWeight:500}}>
+              Add for <span style={{color:T.acc}}>{addCell.person}</span> on <span style={{fontFamily:"'JetBrains Mono',monospace",color:T.acc}}>{addCell.date}</span>
+            </div>
+            <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+              {Object.entries(TYPE_CFG).map(([k,v])=>(
+                <button key={k} onClick={()=>toggleCell(addCell.person,addCell.date,k)}
+                  style={{padding:"5px 12px",borderRadius:6,fontSize:11,cursor:"pointer",
+                    background:v.bg,color:v.text,border:`1px solid ${v.border}`,fontWeight:500}}>
+                  {v.icon} {v.label}
+                </button>
+              ))}
+              <input type="text" value={addReason} onChange={e=>setAddReason(e.target.value)}
+                placeholder="Reason (optional)"
+                style={{background:T.bg2,color:T.t0,border:`1px solid ${T.b2}`,borderRadius:5,padding:"5px 9px",fontSize:11,flex:1,minWidth:120,outline:"none"}}/>
+              <button onClick={()=>setAddCell(null)} style={{background:"transparent",border:"none",color:T.t3,fontSize:14,cursor:"pointer",padding:"0 4px"}}>✕</button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
+
 
 // ─── BULK EVENT ADDER ────────────────────────────────────────────────────────
 // Unified bulk adder for L2, planned leave, and unplanned leave.
@@ -1538,6 +1688,46 @@ function Dashboard({tasks, config, predictions}) {
   );
 }
 
+// ─── SUB-TAG HELPERS ──────────────────────────────────────────────────────────
+function SubTagBadge({ tag, small }) {
+  if (!tag) return null;
+  const cfg = Object.values(SUB_TAGS).flat().find(t => t.id === tag);
+  if (!cfg) return null;
+  return (
+    <span style={{
+      fontSize: small ? 8 : 9, padding: small ? "1px 4px" : "2px 6px",
+      borderRadius: 4, background: cfg.bg, color: cfg.text,
+      border: `1px solid ${cfg.border}`, fontWeight: 500, flexShrink: 0,
+      whiteSpace: "nowrap",
+    }}>{cfg.label}</span>
+  );
+}
+
+function SubTagPicker({ status, current, onChange }) {
+  const tags = SUB_TAGS[status];
+  if (!tags) return null;
+  return (
+    <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+      {tags.map(t => {
+        const active = current === t.id;
+        return (
+          <button key={t.id} onClick={() => onChange(active ? null : t.id)}
+            style={{
+              fontSize: 10, padding: "3px 8px", borderRadius: 5, cursor: "pointer",
+              background: active ? t.bg : "transparent",
+              color: active ? t.text : T.t2,
+              border: `1px solid ${active ? t.border : T.b1}`,
+              fontWeight: active ? 600 : 400,
+            }}>{t.label}{active ? " ✓" : ""}</button>
+        );
+      })}
+      {current && <button onClick={() => onChange(null)}
+        style={{ fontSize: 10, padding: "3px 7px", borderRadius: 5, cursor: "pointer",
+          background: "transparent", color: T.t3, border: `1px solid ${T.b1}` }}>clear</button>}
+    </div>
+  );
+}
+
 // ─── GANTT VIEW ───────────────────────────────────────────────────────────────
 function GanttView({tasks, config, predictions, onOpenTask, updateTasks}) {
   const today = fmtDate(new Date());
@@ -2391,6 +2581,7 @@ function TableView({tasks, config, editMode, updateTasks, updateConfig, predicti
                           {(t.dependsOn||[]).length>0&&<span style={{fontSize:9,color:T.t3,flexShrink:0,fontFamily:"'JetBrains Mono',monospace"}}>← #{(t.dependsOn||[]).join(",")}</span>}
                           {commentCount>0&&<span style={{fontSize:9,color:T.acc,flexShrink:0}}>💬{commentCount}</span>}
                           {t.notes&&<span style={{fontSize:10,color:T.t3,flexShrink:0}} title={t.notes}>📝</span>}
+                          {t.subTag&&<SubTagBadge tag={t.subTag} small/>}
                         </div>
                     }
                   </div>
@@ -2434,7 +2625,25 @@ function TableView({tasks, config, editMode, updateTasks, updateConfig, predicti
                           style={{background:T.bg2,color:T.t0,border:`1px solid ${T.b2}`,borderRadius:4,padding:"3px 5px",fontSize:11,width:"100%"}}>
                           {STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
                         </select>
-                      : <span className="tag" style={{background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`,cursor:"default"}}>{t.status}</span>
+                      : <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                          <span className="tag" style={{background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`,cursor:"default"}}>{t.status}</span>
+                          {SUB_TAGS[t.status]&&(
+                            <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
+                              {SUB_TAGS[t.status].map(tag=>{
+                                const active=t.subTag===tag.id;
+                                return <button key={tag.id} onClick={()=>{
+                                  const logs=[...(t.subTagLog||[])];
+                                  if(!active) logs.push({tag:tag.id,date:fmtDate(new Date()),taskId:t.id});
+                                  update(t.id,"subTag",active?null:tag.id);
+                                  update(t.id,"subTagLog",logs);
+                                }} style={{fontSize:8,padding:"1px 4px",borderRadius:3,cursor:"pointer",
+                                  background:active?tag.bg:"transparent",color:active?tag.text:T.t3,
+                                  border:`1px solid ${active?tag.border:T.b1}`,fontWeight:active?600:400,
+                                }}>{tag.label.split(" ")[0]}{active?" ✓":""}</button>;
+                              })}
+                            </div>
+                          )}
+                        </div>
                     }
                   </div>
 
@@ -2790,114 +2999,123 @@ function CapacityView({tasks, config, updateConfig, predictions}) {
       .map(t => taskPredictedEnd(t.id, predictions)).filter(Boolean);
     const freeDate = myEnds.length > 0 ? fmtDate(new Date(Math.max(...myEnds.map(d => d.getTime())))) : null;
     const myTasks  = tasks.filter(t =>
-      Object.values(t.owners||{}).includes(person) &&
-      !["Released","Descoped"].includes(t.status)
+      Object.values(t.owners||{}).includes(person) && !["Released","Descoped"].includes(t.status)
     );
     return { person, effort, available, l2Days, leaveDays, pct, overloaded, freeDate, myTasks };
   }
 
+  // Groups: members sorted by utilisation DESC within each group
   const groups = FUNC_GROUPS.map(g => {
-    const members = TEAM_NAMES.filter(p => TEAM[p]?.func === g.key || TEAM[p]?.shared === g.key);
-    return { ...g, members, stats: members.map(getPersonStats) };
-  }).filter(g => g.members.length > 0);
+    const members = TEAM_NAMES.filter(p => TEAM[p]?.func===g.key || TEAM[p]?.shared===g.key);
+    const stats   = members.map(getPersonStats).sort((a,b) => b.pct - a.pct);
+    return { ...g, stats };
+  }).filter(g => g.stats.length > 0);
 
-  const allStats   = TEAM_NAMES.map(getPersonStats);
-  const totalEff   = allStats.reduce((s,p) => s + p.effort, 0);
-  const totalAvail = allStats.reduce((s,p) => s + p.available, 0);
+  const allStats       = TEAM_NAMES.map(getPersonStats);
+  const totalEff       = allStats.reduce((s,p) => s + p.effort, 0);
+  const totalAvail     = allStats.reduce((s,p) => s + p.available, 0);
   const overloadedList = allStats.filter(p => p.overloaded);
 
   const addEvent = () => {
     if (!newDate || !addingEvent) return;
-    updateConfig(c => ({
-      ...c,
-      calendarEvents: [...(c.calendarEvents||[]), {
-        person: selectedPerson, date: newDate,
-        type: addingEvent.type,
-        reason: newReason || undefined
-      }]
-    }));
+    updateConfig(c => ({ ...c, calendarEvents: [...(c.calendarEvents||[]),
+      { person: selectedPerson, date: newDate, type: addingEvent.type, reason: newReason||undefined }
+    ]}));
     setNewDate(""); setNewReason(""); setAddingEvent(null);
   };
-
   const addHolidayDate = () => {
     if (!holidayInput) return;
     const existing = new Set(config.holidays||[]);
-    if (!existing.has(holidayInput)) {
-      updateConfig(c => ({ ...c, holidays: [...(c.holidays||[]), holidayInput].sort() }));
-    }
+    if (!existing.has(holidayInput)) updateConfig(c => ({ ...c, holidays: [...(c.holidays||[]), holidayInput].sort() }));
     setHolidayInput(""); setAddHoliday(false);
   };
 
   const inp = { background:T.bg2, color:T.t0, border:`1px solid ${T.b2}`, borderRadius:5, padding:"5px 9px", fontSize:12, outline:"none" };
 
-  const PersonCard = ({ s, groupColor }) => {
-    const color   = TEAM[s.person]?.bar || groupColor;
-    const utilCol = s.overloaded ? T.p1 : s.pct > 85 ? T.p2 : s.pct > 50 ? T.acc : T.p3;
+  // ── Table row ──────────────────────────────────────────────────────────────
+  const PersonRow = ({ s, groupColor }) => {
+    const color    = TEAM[s.person]?.bar || groupColor;
+    const utilCol  = s.overloaded ? T.p1 : s.pct > 85 ? T.p2 : s.pct > 50 ? T.acc : T.p3;
     const isShared = TEAM[s.person]?.shared;
-    const isSelected = selectedPerson === s.person;
+    const isSel    = selectedPerson === s.person;
     return (
       <div
-        onClick={() => { setSelectedPerson(isSelected ? null : s.person); setAddingEvent(null); setNewDate(""); setNewReason(""); }}
+        onClick={() => { setSelectedPerson(isSel ? null : s.person); setAddingEvent(null); setNewDate(""); setNewReason(""); }}
         style={{
-          background: isSelected ? `${color}10` : T.bg1,
-          border: `1px solid ${isSelected ? color : s.overloaded ? T.sBlk.border : T.b1}`,
-          borderRadius: 8, padding: "12px 14px", cursor: "pointer", transition: "all 0.15s", position: "relative",
+          display:"grid",
+          gridTemplateColumns:"180px 56px 100px 80px 60px 60px 60px 1fr",
+          alignItems:"center",
+          padding:"0 14px",
+          height:42,
+          background:isSel?`${color}10`:T.bg0,
+          borderBottom:`1px solid ${T.b0}`,
+          borderLeft:`3px solid ${isSel?color:"transparent"}`,
+          cursor:"pointer",
+          transition:"background 0.1s",
         }}
-        onMouseEnter={e => { if (!isSelected) e.currentTarget.style.borderColor = color; }}
-        onMouseLeave={e => { if (!isSelected) e.currentTarget.style.borderColor = s.overloaded ? T.sBlk.border : T.b1; }}
+        onMouseEnter={e=>{ if(!isSel) e.currentTarget.style.background=`${color}07`; }}
+        onMouseLeave={e=>{ e.currentTarget.style.background=isSel?`${color}10`:T.bg0; }}
       >
-        {s.overloaded && (
-          <div style={{position:"absolute",top:0,right:0,background:T.sBlk.bg,color:T.p1,
-            fontSize:9,fontWeight:600,padding:"2px 7px",borderRadius:"0 8px 0 5px",
-            border:`1px solid ${T.sBlk.border}`,borderTop:"none",borderRight:"none"}}>overloaded</div>
-        )}
-        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-          <div style={{width:28,height:28,borderRadius:"50%",background:`${color}20`,border:`2px solid ${color}60`,
-            display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,color,flexShrink:0}}>
+        {/* Name + avatar */}
+        <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0}}>
+          <div style={{width:24,height:24,borderRadius:"50%",background:`${color}20`,border:`1.5px solid ${color}60`,
+            display:"flex",alignItems:"center",justifyContent:"center",fontSize:8,fontWeight:700,color,flexShrink:0}}>
             {s.person.slice(0,2).toUpperCase()}
           </div>
-          <div style={{flex:1,minWidth:0}}>
-            <div style={{display:"flex",alignItems:"center",gap:5}}>
-              <span style={{fontSize:12,fontWeight:600,color:T.t0}}>{s.person}</span>
-              {isShared && <span style={{fontSize:9,color:T.t3,background:T.bg2,padding:"1px 5px",borderRadius:3,border:`1px solid ${T.b1}`}}>shared</span>}
-            </div>
-            {s.freeDate && (
-              <div style={{fontSize:10,color:s.freeDate > sprintEndStr ? T.p1 : T.t3,marginTop:1}}>
-                free {s.freeDate.slice(5)}{s.freeDate > sprintEndStr ? " ⚠" : ""}
-              </div>
-            )}
+          <span style={{fontSize:12,fontWeight:500,color:T.t0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.person}</span>
+          {isShared&&<span style={{fontSize:8,color:T.t3,background:T.bg2,padding:"1px 4px",borderRadius:3,border:`1px solid ${T.b1}`,flexShrink:0}}>shared</span>}
+          {s.overloaded&&<span style={{fontSize:8,color:T.p1,background:T.p1bg,padding:"1px 4px",borderRadius:3,border:`1px solid ${T.sBlk.border}`,flexShrink:0}}>overloaded</span>}
+        </div>
+
+        {/* % utilised — big number */}
+        <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:16,fontWeight:700,color:utilCol,textAlign:"right"}}>{s.pct}%</div>
+
+        {/* Util bar */}
+        <div style={{padding:"0 10px"}}>
+          <div style={{height:6,background:T.b1,borderRadius:3,overflow:"hidden"}}>
+            <div style={{height:"100%",width:`${Math.min(s.pct,100)}%`,background:utilCol,borderRadius:3,transition:"width 0.3s"}}/>
           </div>
-          <span style={{fontSize:20,fontWeight:700,color:utilCol,fontFamily:"'JetBrains Mono',monospace",lineHeight:1}}>{s.pct}%</span>
         </div>
-        <div style={{height:3,background:T.b1,borderRadius:2,overflow:"hidden",marginBottom:10}}>
-          <div style={{height:"100%",width:`${Math.min(s.pct,100)}%`,background:utilCol,borderRadius:2,transition:"width 0.3s"}}/>
+
+        {/* Effort */}
+        <div style={{textAlign:"center"}}>
+          <div style={{fontSize:12,fontWeight:600,color:T.t0,fontFamily:"'JetBrains Mono',monospace"}}>{s.effort}d</div>
+          <div style={{fontSize:8,color:T.t3,textTransform:"uppercase"}}>effort</div>
         </div>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:5,marginBottom:8}}>
-          {[["Effort",`${s.effort}d`,T.t1],["Avail",`${s.available}d`,T.t1],
-            ["L2",`${s.l2Days}d`,s.l2Days>0?T.p2:T.t3],["Leave",`${s.leaveDays}d`,s.leaveDays>0?T.p2:T.t3]].map(([label,val,col]) => (
-            <div key={label} style={{background:T.bg0,borderRadius:4,padding:"4px 6px",textAlign:"center"}}>
-              <div style={{fontSize:8,color:T.t3,textTransform:"uppercase",letterSpacing:0.4,marginBottom:2}}>{label}</div>
-              <div style={{fontSize:11,color:col,fontWeight:500,fontFamily:"'JetBrains Mono',monospace"}}>{val}</div>
-            </div>
-          ))}
+
+        {/* Available */}
+        <div style={{textAlign:"center"}}>
+          <div style={{fontSize:12,fontWeight:600,color:T.t0,fontFamily:"'JetBrains Mono',monospace"}}>{s.available}d</div>
+          <div style={{fontSize:8,color:T.t3,textTransform:"uppercase"}}>avail</div>
         </div>
-        {s.myTasks.length > 0 ? (
-          <div style={{paddingTop:8,borderTop:`1px solid ${T.b0}`}}>
-            {s.myTasks.slice(0,3).map(t => {
-              const sc = STATUS_COLOR[t.status]||T.sDo;
-              return (
-                <div key={t.id} style={{display:"flex",alignItems:"center",gap:5,marginBottom:3}}>
-                  <span style={{fontSize:9,color:T.t3,fontFamily:"'JetBrains Mono',monospace",flexShrink:0,width:18}}>#{t.id}</span>
-                  <span style={{fontSize:10,color:T.t1,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name}</span>
-                  <span style={{fontSize:9,padding:"1px 5px",borderRadius:3,background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`,flexShrink:0}}>{t.status}</span>
-                </div>
-              );
+
+        {/* L2 */}
+        <div style={{textAlign:"center"}}>
+          <div style={{fontSize:12,fontWeight:600,color:s.l2Days>0?T.p2:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>{s.l2Days}d</div>
+          <div style={{fontSize:8,color:T.t3,textTransform:"uppercase"}}>L2</div>
+        </div>
+
+        {/* Leave */}
+        <div style={{textAlign:"center"}}>
+          <div style={{fontSize:12,fontWeight:600,color:s.leaveDays>0?T.p2:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>{s.leaveDays}d</div>
+          <div style={{fontSize:8,color:T.t3,textTransform:"uppercase"}}>leave</div>
+        </div>
+
+        {/* Free date + tasks preview */}
+        <div style={{paddingLeft:10,display:"flex",alignItems:"center",gap:8,minWidth:0,overflow:"hidden"}}>
+          {s.freeDate&&(
+            <span style={{fontSize:10,color:s.freeDate>sprintEndStr?T.p1:T.t3,fontFamily:"'JetBrains Mono',monospace",flexShrink:0}}>
+              free {s.freeDate.slice(5)}{s.freeDate>sprintEndStr?" ⚠":""}
+            </span>
+          )}
+          <div style={{display:"flex",gap:3,overflow:"hidden"}}>
+            {s.myTasks.slice(0,3).map(t=>{
+              const sc=STATUS_COLOR[t.status]||T.sDo;
+              return <span key={t.id} style={{fontSize:9,padding:"1px 5px",borderRadius:3,background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`,whiteSpace:"nowrap",flexShrink:0}}>{t.name.slice(0,18)}{t.name.length>18?"…":""}</span>;
             })}
-            {s.myTasks.length > 3 && <div style={{fontSize:10,color:T.t3,marginTop:2}}>+{s.myTasks.length-3} more</div>}
+            {s.myTasks.length>3&&<span style={{fontSize:9,color:T.t3,flexShrink:0}}>+{s.myTasks.length-3}</span>}
           </div>
-        ) : (
-          <div style={{paddingTop:8,borderTop:`1px solid ${T.b0}`,fontSize:10,color:T.t3,fontStyle:"italic"}}>No active tasks</div>
-        )}
+        </div>
       </div>
     );
   };
@@ -2905,74 +3123,92 @@ function CapacityView({tasks, config, updateConfig, predictions}) {
   return (
     <div style={{display:"flex",height:"calc(100vh - 52px)",overflow:"hidden"}} className="fade-in">
 
-      {/* ── Main ── */}
-      <div style={{flex:1,overflow:"auto",padding:"20px 24px"}}>
+      {/* ── Main table ── */}
+      <div style={{flex:1,overflow:"auto"}}>
 
-        {/* Header */}
-        <div style={{display:"flex",alignItems:"flex-start",gap:12,marginBottom:18,flexWrap:"wrap"}}>
+        {/* Sprint summary header */}
+        <div style={{padding:"14px 20px",borderBottom:`1px solid ${T.b1}`,background:T.bg1,display:"flex",alignItems:"center",gap:16,flexWrap:"wrap",flexShrink:0}}>
           <div>
-            <div style={{fontSize:10,color:T.t2,textTransform:"uppercase",letterSpacing:0.8,fontWeight:500,marginBottom:4}}>
+            <div style={{fontSize:10,color:T.t2,textTransform:"uppercase",letterSpacing:0.8,fontWeight:500,marginBottom:3}}>
               Team Capacity · {sprintStart} – {sprintEndStr} · {totalWorkDays} working days
             </div>
-            <div style={{display:"flex",gap:14,alignItems:"center",flexWrap:"wrap"}}>
-              <span style={{fontSize:13,color:T.t0}}><span style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:600,color:T.acc}}>{totalEff}d</span> effort</span>
-              <span style={{fontSize:13,color:T.t0}}><span style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:600}}>{totalAvail}d</span> available</span>
-              <span style={{fontSize:13,color:T.t0}}><span style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:600,color:totalEff>totalAvail?T.p1:T.p3}}>{totalAvail>0?Math.round((totalEff/totalAvail)*100):0}%</span> utilised</span>
-              {overloadedList.length > 0 && (
-                <span style={{fontSize:11,color:T.p1,background:T.p1bg,padding:"2px 9px",borderRadius:6,border:`1px solid ${T.sBlk.border}`}}>⚠ {overloadedList.length} overloaded</span>
-              )}
+            <div style={{display:"flex",gap:16,alignItems:"center"}}>
+              <span style={{fontSize:13,color:T.t0}}><span style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:700,color:T.acc}}>{totalEff}d</span> effort</span>
+              <span style={{fontSize:13,color:T.t0}}><span style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>{totalAvail}d</span> available</span>
+              <span style={{fontSize:13,color:T.t0}}><span style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:700,color:totalEff>totalAvail?T.p1:T.p3}}>{totalAvail>0?Math.round((totalEff/totalAvail)*100):0}%</span> utilised</span>
+              {overloadedList.length>0&&<span style={{fontSize:11,color:T.p1,background:T.p1bg,padding:"2px 9px",borderRadius:6,border:`1px solid ${T.sBlk.border}`}}>⚠ {overloadedList.length} overloaded</span>}
             </div>
           </div>
 
-          {/* Holidays manager */}
+          {/* Holidays */}
           <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-            {(config.holidays||[]).map(h => {
-              const dt = parseDate(h);
-              const lbl = dt.toLocaleDateString("en-GB",{day:"numeric",month:"short"});
+            {(config.holidays||[]).map(h=>{
+              const dt=parseDate(h);
+              const lbl=dt.toLocaleDateString("en-GB",{day:"numeric",month:"short"});
               return (
                 <span key={h} style={{fontSize:10,padding:"3px 8px",borderRadius:5,background:T.holBg,color:T.hol,border:`1px solid ${T.hol}40`,display:"flex",alignItems:"center",gap:5}}>
                   🎉 {lbl}
-                  <button onClick={()=>updateConfig(c=>({...c,holidays:(c.holidays||[]).filter(x=>x!==h)}))}
-                    style={{background:"none",border:"none",color:T.t3,cursor:"pointer",fontSize:11,padding:0,lineHeight:1}}>×</button>
+                  <button onClick={()=>updateConfig(c=>({...c,holidays:(c.holidays||[]).filter(x=>x!==h)}))} style={{background:"none",border:"none",color:T.t3,cursor:"pointer",fontSize:11,padding:0,lineHeight:1}}>×</button>
                 </span>
               );
             })}
-            {addHoliday ? (
-              <div style={{display:"flex",gap:5,alignItems:"center"}}>
-                <input type="date" value={holidayInput} onChange={e=>setHolidayInput(e.target.value)} style={{...inp,fontSize:11,padding:"3px 8px"}}/>
-                <button className="btn" onClick={addHolidayDate} style={{padding:"3px 10px",borderRadius:5,fontSize:11,background:T.hol,color:"#fff",border:"none",cursor:"pointer"}}>Add</button>
-                <button className="btn" onClick={()=>{setAddHoliday(false);setHolidayInput("");}} style={{padding:"3px 7px",borderRadius:5,fontSize:11,background:"transparent",color:T.t3,border:`1px solid ${T.b1}`}}>✕</button>
-              </div>
-            ) : (
-              <button className="btn" onClick={()=>setAddHoliday(true)} style={{padding:"4px 11px",borderRadius:5,fontSize:11,background:T.bg2,color:T.t2,border:`1px solid ${T.b1}`,cursor:"pointer"}}>🎉 + Holiday</button>
-            )}
+            {addHoliday
+              ? <div style={{display:"flex",gap:5,alignItems:"center"}}>
+                  <input type="date" value={holidayInput} onChange={e=>setHolidayInput(e.target.value)} style={{...inp,fontSize:11,padding:"3px 8px"}}/>
+                  <button className="btn" onClick={addHolidayDate} style={{padding:"3px 10px",borderRadius:5,fontSize:11,background:T.hol,color:"#fff",border:"none",cursor:"pointer"}}>Add</button>
+                  <button className="btn" onClick={()=>{setAddHoliday(false);setHolidayInput("");}} style={{padding:"3px 7px",borderRadius:5,fontSize:11,background:"transparent",color:T.t3,border:`1px solid ${T.b1}`}}>✕</button>
+                </div>
+              : <button className="btn" onClick={()=>setAddHoliday(true)} style={{padding:"4px 11px",borderRadius:5,fontSize:11,background:T.bg2,color:T.t2,border:`1px solid ${T.b1}`,cursor:"pointer"}}>🎉 + Holiday</button>
+            }
           </div>
+        </div>
+
+        {/* Table column header */}
+        <div style={{display:"grid",gridTemplateColumns:"180px 56px 100px 80px 60px 60px 60px 1fr",
+          padding:"0 14px",height:30,background:T.bg2,borderBottom:`1px solid ${T.b1}`,
+          position:"sticky",top:0,zIndex:5}}>
+          {["Person","","Load","Effort","Avail","L2","Leave","Active tasks + free date"].map((h,i)=>(
+            <div key={i} style={{display:"flex",alignItems:"center",fontSize:9,color:T.t3,
+              textTransform:"uppercase",letterSpacing:0.6,fontWeight:600,
+              justifyContent:i>0&&i<7?"center":"flex-start",paddingLeft:i===7?10:0}}>
+              {h}{i===1&&<span style={{fontSize:8,color:T.t3,marginLeft:2}}>↓ desc</span>}
+            </div>
+          ))}
         </div>
 
         {/* Function groups */}
         {groups.map(g => {
-          const groupEff   = g.stats.reduce((s,p) => s + p.effort, 0);
-          const groupAvail = g.stats.reduce((s,p) => s + p.available, 0);
-          const groupPct   = groupAvail > 0 ? Math.round((groupEff/groupAvail)*100) : 0;
-          const groupOver  = g.stats.filter(p => p.overloaded).length;
-          const utilCol    = groupOver > 0 ? T.p1 : groupPct > 85 ? T.p2 : groupPct > 50 ? T.acc : T.p3;
+          const groupEff   = g.stats.reduce((s,p)=>s+p.effort,0);
+          const groupAvail = g.stats.reduce((s,p)=>s+p.available,0);
+          const groupPct   = groupAvail>0?Math.round((groupEff/groupAvail)*100):0;
+          const groupOver  = g.stats.filter(p=>p.overloaded).length;
+          const utilCol    = groupOver>0?T.p1:groupPct>85?T.p2:groupPct>50?T.acc:T.p3;
           return (
-            <div key={g.key} style={{marginBottom:24}}>
-              <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
-                <div style={{width:3,height:16,background:g.color,borderRadius:2,flexShrink:0}}/>
-                <span style={{fontSize:11,fontWeight:700,color:T.t1,textTransform:"uppercase",letterSpacing:0.8}}>{g.label}</span>
-                <span style={{fontSize:10,color:T.t3}}>{g.members.length} {g.members.length===1?"person":"people"}</span>
-                <div style={{flex:1,height:1,background:T.b1}}/>
-                <span style={{fontSize:11,fontFamily:"'JetBrains Mono',monospace",color:utilCol,fontWeight:600}}>{groupEff}d / {groupAvail}d</span>
-                <div style={{width:56,height:3,background:T.b1,borderRadius:2,overflow:"hidden"}}>
-                  <div style={{height:"100%",width:`${Math.min(groupPct,100)}%`,background:utilCol,borderRadius:2}}/>
+            <div key={g.key}>
+              {/* Group header */}
+              <div style={{display:"grid",gridTemplateColumns:"180px 56px 100px 80px 60px 60px 60px 1fr",
+                padding:"0 14px",height:32,background:T.bg1,borderBottom:`1px solid ${T.b1}`,
+                borderTop:`2px solid ${g.color}30`,alignItems:"center"}}>
+                <div style={{display:"flex",alignItems:"center",gap:7}}>
+                  <div style={{width:3,height:14,background:g.color,borderRadius:2}}/>
+                  <span style={{fontSize:10,fontWeight:700,color:g.color,textTransform:"uppercase",letterSpacing:0.8}}>{g.label}</span>
+                  <span style={{fontSize:9,color:T.t3}}>{g.stats.length}</span>
                 </div>
-                <span style={{fontSize:11,color:utilCol,fontFamily:"'JetBrains Mono',monospace",fontWeight:700,minWidth:36,textAlign:"right"}}>{groupPct}%</span>
-                {groupOver > 0 && <span style={{fontSize:9,color:T.p1,background:T.p1bg,padding:"1px 6px",borderRadius:4,border:`1px solid ${T.sBlk.border}`}}>⚠ {groupOver}</span>}
+                <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:13,fontWeight:700,color:utilCol,textAlign:"right"}}>{groupPct}%</div>
+                <div style={{padding:"0 10px"}}>
+                  <div style={{height:4,background:T.b1,borderRadius:2,overflow:"hidden"}}>
+                    <div style={{height:"100%",width:`${Math.min(groupPct,100)}%`,background:utilCol,borderRadius:2}}/>
+                  </div>
+                </div>
+                <div style={{textAlign:"center",fontSize:11,fontFamily:"'JetBrains Mono',monospace",color:T.t2,fontWeight:600}}>{groupEff}d</div>
+                <div style={{textAlign:"center",fontSize:11,fontFamily:"'JetBrains Mono',monospace",color:T.t2}}>{groupAvail}d</div>
+                <div/>
+                <div/>
+                {groupOver>0&&<div style={{paddingLeft:10,fontSize:9,color:T.p1,fontWeight:600}}>⚠ {groupOver} overloaded</div>}
               </div>
-              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(250px,1fr))",gap:8}}>
-                {g.stats.map(s => <PersonCard key={s.person} s={s} groupColor={g.color}/>)}
-              </div>
+
+              {/* Person rows — sorted by pct desc */}
+              {g.stats.map(s => <PersonRow key={`${g.key}_${s.person}`} s={s} groupColor={g.color}/>)}
             </div>
           );
         })}
@@ -2982,46 +3218,38 @@ function CapacityView({tasks, config, updateConfig, predictions}) {
       {selectedPerson && (() => {
         const s     = getPersonStats(selectedPerson);
         const color = TEAM[selectedPerson]?.bar || T.acc;
-        const allEvents  = (config.calendarEvents||[]).filter(e => e.person === selectedPerson && e.date >= sprintStart && e.date <= sprintEndStr);
-        const l2Evts     = allEvents.filter(e => e.type === "l2");
-        const leaveEvts  = allEvents.filter(e => e.type === "planned" || e.type === "unplanned");
+        const allEvt  = (config.calendarEvents||[]).filter(e=>e.person===selectedPerson&&e.date>=sprintStart&&e.date<=sprintEndStr);
+        const l2Evts  = allEvt.filter(e=>e.type==="l2");
+        const leaveEvts = allEvt.filter(e=>e.type==="planned"||e.type==="unplanned");
 
-        const removeEvent = (evt) => {
-          updateConfig(c => ({
-            ...c,
-            calendarEvents: c.calendarEvents.filter(e =>
-              !(e.person===evt.person && e.date===evt.date && e.type===evt.type && e.reason===evt.reason)
-            )
-          }));
-        };
+        const removeEvent = evt => updateConfig(c=>({
+          ...c, calendarEvents:c.calendarEvents.filter(e=>
+            !(e.person===evt.person&&e.date===evt.date&&e.type===evt.type&&e.reason===evt.reason)
+          )
+        }));
 
         const EventChip = ({evt}) => (
-          <div style={{display:"flex",alignItems:"center",gap:6,padding:"5px 8px",borderRadius:5,marginBottom:4,
+          <div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 8px",borderRadius:5,marginBottom:4,
             background:evt.type==="l2"?`${T.p2}12`:T.p1bg,
             border:`1px solid ${evt.type==="l2"?`${T.p2}40`:T.sBlk.border}`}}>
             <span style={{fontSize:11,fontFamily:"'JetBrains Mono',monospace",color:evt.type==="l2"?T.p2:T.p1,fontWeight:600,minWidth:48}}>{evt.date.slice(5)}</span>
             <span style={{fontSize:10,color:T.t2,flex:1}}>{evt.type==="l2"?"L2 duty":evt.reason||evt.type}</span>
-            <button onClick={()=>removeEvent(evt)}
-              style={{background:"none",border:"none",color:T.t3,cursor:"pointer",fontSize:13,lineHeight:1,padding:"0 2px"}}
+            <button onClick={()=>removeEvent(evt)} style={{background:"none",border:"none",color:T.t3,cursor:"pointer",fontSize:13,lineHeight:1,padding:"0 2px"}}
               onMouseEnter={e=>e.target.style.color=T.p1} onMouseLeave={e=>e.target.style.color=T.t3}>×</button>
           </div>
         );
 
         return (
-          <div style={{width:300,background:T.bg1,borderLeft:`1px solid ${T.b1}`,display:"flex",flexDirection:"column",overflow:"hidden",flexShrink:0}}>
-            {/* Panel header */}
+          <div style={{width:290,background:T.bg1,borderLeft:`1px solid ${T.b1}`,display:"flex",flexDirection:"column",overflow:"hidden",flexShrink:0}}>
             <div style={{padding:"14px 16px",borderBottom:`1px solid ${T.b1}`,background:T.bg0,flexShrink:0}}>
               <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-                <div style={{width:34,height:34,borderRadius:"50%",background:`${color}20`,border:`2px solid ${color}60`,
+                <div style={{width:32,height:32,borderRadius:"50%",background:`${color}20`,border:`2px solid ${color}60`,
                   display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,color}}>
                   {selectedPerson.slice(0,2).toUpperCase()}
                 </div>
                 <div style={{flex:1}}>
                   <div style={{fontSize:13,fontWeight:600,color:T.t0}}>{selectedPerson}</div>
-                  <div style={{fontSize:10,color:T.t3}}>
-                    {TEAM[selectedPerson]?.func}{TEAM[selectedPerson]?.shared ? ` · ${TEAM[selectedPerson].shared}` : ""}
-                    {TEAM[selectedPerson]?.shared ? <span style={{marginLeft:5,fontSize:9,background:T.bg2,padding:"1px 5px",borderRadius:3,border:`1px solid ${T.b1}`,color:T.t3}}>shared</span> : ""}
-                  </div>
+                  <div style={{fontSize:10,color:T.t3}}>{TEAM[selectedPerson]?.func}{TEAM[selectedPerson]?.shared?` · ${TEAM[selectedPerson].shared}`:""}</div>
                 </div>
                 <button onClick={()=>{setSelectedPerson(null);setAddingEvent(null);}}
                   style={{background:"transparent",border:`1px solid ${T.b1}`,borderRadius:4,color:T.t2,fontSize:14,cursor:"pointer",padding:"2px 8px",lineHeight:1}}>×</button>
@@ -3038,73 +3266,51 @@ function CapacityView({tasks, config, updateConfig, predictions}) {
             </div>
 
             <div style={{flex:1,overflow:"auto",padding:"14px 16px"}}>
-
-              {/* L2 */}
               <div style={{marginBottom:16}}>
                 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:7}}>
                   <span style={{fontSize:10,fontWeight:600,color:T.t2,textTransform:"uppercase",letterSpacing:0.5}}>L2 Duty</span>
                   <button className="btn" onClick={()=>setAddingEvent(addingEvent?.type==="l2"?null:{type:"l2"})}
                     style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:addingEvent?.type==="l2"?`${T.p2}20`:T.bg2,color:addingEvent?.type==="l2"?T.p2:T.t2,border:`1px solid ${addingEvent?.type==="l2"?T.p2:T.b1}`,cursor:"pointer"}}>
-                    {addingEvent?.type==="l2"?"cancel":"+ Add"}
-                  </button>
+                    {addingEvent?.type==="l2"?"cancel":"+ Add"}</button>
                 </div>
-                {addingEvent?.type==="l2" && (
+                {addingEvent?.type==="l2"&&(
                   <div style={{display:"flex",gap:5,marginBottom:8,alignItems:"center"}}>
                     <input type="date" value={newDate} onChange={e=>setNewDate(e.target.value)} min={sprintStart} max={sprintEndStr} style={{...inp,flex:1,fontSize:11,padding:"4px 7px"}}/>
-                    <button className="btn" onClick={addEvent} disabled={!newDate}
-                      style={{padding:"4px 10px",borderRadius:4,fontSize:11,background:newDate?T.p2:"#aaa",color:"#fff",border:"none",cursor:newDate?"pointer":"default"}}>Add</button>
+                    <button className="btn" onClick={addEvent} disabled={!newDate} style={{padding:"4px 10px",borderRadius:4,fontSize:11,background:newDate?T.p2:"#aaa",color:"#fff",border:"none",cursor:newDate?"pointer":"default"}}>Add</button>
                   </div>
                 )}
-                {l2Evts.length === 0
-                  ? <div style={{fontSize:11,color:T.t3,fontStyle:"italic"}}>No L2 days this sprint</div>
-                  : l2Evts.map((e,i) => <EventChip key={i} evt={e}/>)
-                }
+                {l2Evts.length===0?<div style={{fontSize:11,color:T.t3,fontStyle:"italic"}}>No L2 days this sprint</div>:l2Evts.map((e,i)=><EventChip key={i} evt={e}/>)}
               </div>
 
-              {/* Leave */}
               <div style={{marginBottom:16}}>
                 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:7}}>
                   <span style={{fontSize:10,fontWeight:600,color:T.t2,textTransform:"uppercase",letterSpacing:0.5}}>Leave</span>
                   <div style={{display:"flex",gap:4}}>
                     <button className="btn" onClick={()=>setAddingEvent(addingEvent?.type==="planned"?null:{type:"planned"})}
-                      style={{fontSize:10,padding:"2px 7px",borderRadius:4,cursor:"pointer",
-                        background:addingEvent?.type==="planned"?`${T.p3}20`:T.bg2,
-                        color:addingEvent?.type==="planned"?T.p3:T.t2,
-                        border:`1px solid ${addingEvent?.type==="planned"?T.p3:T.b1}`}}>Planned</button>
+                      style={{fontSize:10,padding:"2px 7px",borderRadius:4,cursor:"pointer",background:addingEvent?.type==="planned"?`${T.p3}20`:T.bg2,color:addingEvent?.type==="planned"?T.p3:T.t2,border:`1px solid ${addingEvent?.type==="planned"?T.p3:T.b1}`}}>Planned</button>
                     <button className="btn" onClick={()=>setAddingEvent(addingEvent?.type==="unplanned"?null:{type:"unplanned"})}
-                      style={{fontSize:10,padding:"2px 7px",borderRadius:4,cursor:"pointer",
-                        background:addingEvent?.type==="unplanned"?`${T.p1}15`:T.bg2,
-                        color:addingEvent?.type==="unplanned"?T.p1:T.t2,
-                        border:`1px solid ${addingEvent?.type==="unplanned"?T.p1:T.b1}`}}>Unplanned</button>
+                      style={{fontSize:10,padding:"2px 7px",borderRadius:4,cursor:"pointer",background:addingEvent?.type==="unplanned"?`${T.p1}15`:T.bg2,color:addingEvent?.type==="unplanned"?T.p1:T.t2,border:`1px solid ${addingEvent?.type==="unplanned"?T.p1:T.b1}`}}>Sick</button>
                   </div>
                 </div>
-                {(addingEvent?.type==="planned"||addingEvent?.type==="unplanned") && (
+                {(addingEvent?.type==="planned"||addingEvent?.type==="unplanned")&&(
                   <div style={{marginBottom:8}}>
                     <div style={{display:"flex",gap:5,marginBottom:5,alignItems:"center"}}>
                       <input type="date" value={newDate} onChange={e=>setNewDate(e.target.value)} min={sprintStart} max={sprintEndStr} style={{...inp,flex:1,fontSize:11,padding:"4px 7px"}}/>
-                      <button className="btn" onClick={addEvent} disabled={!newDate}
-                        style={{padding:"4px 10px",borderRadius:4,fontSize:11,background:newDate?T.acc:"#aaa",color:"#fff",border:"none",cursor:newDate?"pointer":"default"}}>Add</button>
+                      <button className="btn" onClick={addEvent} disabled={!newDate} style={{padding:"4px 10px",borderRadius:4,fontSize:11,background:newDate?T.acc:"#aaa",color:"#fff",border:"none",cursor:newDate?"pointer":"default"}}>Add</button>
                     </div>
-                    <input type="text" value={newReason} onChange={e=>setNewReason(e.target.value)} placeholder="Reason (optional)"
-                      style={{...inp,width:"100%",fontSize:11,padding:"4px 7px",boxSizing:"border-box"}}/>
+                    <input type="text" value={newReason} onChange={e=>setNewReason(e.target.value)} placeholder="Reason (optional)" style={{...inp,width:"100%",fontSize:11,padding:"4px 7px",boxSizing:"border-box"}}/>
                   </div>
                 )}
-                {leaveEvts.length === 0
-                  ? <div style={{fontSize:11,color:T.t3,fontStyle:"italic"}}>No leave this sprint</div>
-                  : leaveEvts.map((e,i) => <EventChip key={i} evt={e}/>)
-                }
+                {leaveEvts.length===0?<div style={{fontSize:11,color:T.t3,fontStyle:"italic"}}>No leave this sprint</div>:leaveEvts.map((e,i)=><EventChip key={i} evt={e}/>)}
               </div>
 
-              {/* Active tasks */}
               <div>
-                <div style={{fontSize:10,fontWeight:600,color:T.t2,textTransform:"uppercase",letterSpacing:0.5,marginBottom:7}}>
-                  Active tasks ({s.myTasks.length})
-                </div>
-                {s.myTasks.length === 0
-                  ? <div style={{fontSize:11,color:T.t3,fontStyle:"italic"}}>No active tasks</div>
-                  : s.myTasks.map(t => {
-                    const sc = STATUS_COLOR[t.status]||T.sDo;
-                    const myEff = ["ios","and","be","wc","qa"].reduce((sum,l) => t.owners?.[l]===selectedPerson ? sum+Number(t.effort?.[l]||0) : sum, 0);
+                <div style={{fontSize:10,fontWeight:600,color:T.t2,textTransform:"uppercase",letterSpacing:0.5,marginBottom:7}}>Active tasks ({s.myTasks.length})</div>
+                {s.myTasks.length===0
+                  ?<div style={{fontSize:11,color:T.t3,fontStyle:"italic"}}>No active tasks</div>
+                  :s.myTasks.map(t=>{
+                    const sc=STATUS_COLOR[t.status]||T.sDo;
+                    const myEff=["ios","and","be","wc","qa"].reduce((sum,l)=>t.owners?.[l]===selectedPerson?sum+Number(t.effort?.[l]||0):sum,0);
                     return (
                       <div key={t.id} style={{padding:"7px 0",borderBottom:`1px solid ${T.b0}`}}>
                         <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:3}}>
@@ -3113,7 +3319,7 @@ function CapacityView({tasks, config, updateConfig, predictions}) {
                         </div>
                         <div style={{display:"flex",gap:5,alignItems:"center"}}>
                           <span style={{fontSize:9,padding:"1px 5px",borderRadius:3,background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`}}>{t.status}</span>
-                          <span style={{fontSize:9,color:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>{myEff}d effort</span>
+                          <span style={{fontSize:9,color:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>{myEff}d</span>
                         </div>
                       </div>
                     );
@@ -3409,6 +3615,7 @@ function TaskDetailDrawer({ task, tasks, updateTasks, config, predictions, pushT
               <span style={{fontSize:10,color:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>#{form.id}</span>
               <span className="tag" style={{background:pc.bgCard,color:pc.bg,border:`1px solid ${pc.bg}30`}}>{form.priority}</span>
               <span className="tag" style={{background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`}}>{form.status}</span>
+              {form.subTag && <SubTagBadge tag={form.subTag}/>}
             </div>
             <button onClick={onClose} style={{background:"transparent",color:T.t2,fontSize:18,border:"none",cursor:"pointer",padding:"0 4px",lineHeight:1}}>×</button>
           </div>
@@ -3455,6 +3662,24 @@ function TaskDetailDrawer({ task, tasks, updateTasks, config, predictions, pushT
                   </select>
                 </div>
               </div>
+              {SUB_TAGS[form.status] && (
+                <div style={{marginBottom:12,padding:"10px 12px",background:T.bg2,borderRadius:6,border:`1px solid ${T.b1}`}}>
+                  <label style={{fontSize:10,color:T.t2,display:"block",marginBottom:6,textTransform:"uppercase",letterSpacing:0.5}}>Sub-status tag</label>
+                  <SubTagPicker status={form.status} current={form.subTag||null} onChange={v=>{
+                    const logs=[...(form.subTagLog||[])];
+                    if(v) logs.push({tag:v,date:fmtDate(new Date()),taskId:form.id});
+                    set("subTag",v);
+                    set("subTagLog",logs);
+                  }}/>
+                  {(form.subTagLog||[]).length>0&&(
+                    <div style={{marginTop:8,fontSize:10,color:T.t3}}>
+                      History: {[...(form.subTagLog||[])].reverse().slice(0,5).map((l,i)=>(
+                        <span key={i} style={{marginRight:6}}>{l.tag} <span style={{fontFamily:"'JetBrains Mono',monospace"}}>{l.date?.slice(5)}</span></span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
                 <div>
                   <label style={{fontSize:10,color:T.t2,display:"block",marginBottom:4,textTransform:"uppercase",letterSpacing:0.5}}>Planned Start</label>
@@ -3612,6 +3837,17 @@ function RetroView({ tasks, config, predictions, velocity }) {
 
   // Task delays log
   const taskDelays = config.taskDelays || [];
+
+  // Sub-tag analytics
+  const subTagStats = tasks.map(t => {
+    const logs = t.subTagLog || [];
+    const reviewCount = logs.filter(l => l.tag === "review").length;
+    const bugfixCount = logs.filter(l => l.tag === "bugfix").length;
+    const blockedCount = logs.filter(l => l.tag === "blocked").length;
+    return { t, reviewCount, bugfixCount, blockedCount, total: reviewCount + bugfixCount + blockedCount };
+  }).filter(x => x.total > 0).sort((a,b) => b.total - a.total);
+  const longReview  = subTagStats.filter(x => x.reviewCount >= 2);
+  const multiBugfix = subTagStats.filter(x => x.bugfixCount >= 2);
 
   // Print helper
   const handlePrint = () => window.print();
@@ -3799,6 +4035,48 @@ function RetroView({ tasks, config, predictions, velocity }) {
                 </div>
             }
           </Section>
+
+          {/* Sub-tag analytics */}
+          {subTagStats.length>0&&(
+            <Section title="Review & Bug-fix cycles" count={subTagStats.length} color={T.p1} icon="🔁">
+              <div style={{fontSize:10,color:T.t3,marginBottom:8}}>Tasks that accumulated review or bug-fix cycles this sprint</div>
+              {longReview.length>0&&(
+                <div style={{marginBottom:10}}>
+                  <div style={{fontSize:10,color:"#a07020",fontWeight:600,marginBottom:5}}>👀 Stuck in review (2+ cycles)</div>
+                  {longReview.map(({t,reviewCount})=>{
+                    const sc=STATUS_COLOR[t.status]||T.sDo;
+                    return (
+                      <div key={t.id} style={{display:"flex",alignItems:"center",gap:7,padding:"5px 0",borderBottom:`1px solid ${T.b0}`}}>
+                        <span style={{fontSize:10,color:T.t3,fontFamily:"'JetBrains Mono',monospace",flexShrink:0}}>#{t.id}</span>
+                        <span style={{fontSize:11,color:T.t0,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name}</span>
+                        <span style={{fontSize:9,padding:"1px 5px",borderRadius:3,background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`}}>{t.status}</span>
+                        <span style={{fontSize:10,fontFamily:"'JetBrains Mono',monospace",color:"#a07020",fontWeight:600,flexShrink:0}}>×{reviewCount}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {multiBugfix.length>0&&(
+                <div style={{marginBottom:6}}>
+                  <div style={{fontSize:10,color:T.p1,fontWeight:600,marginBottom:5}}>🐛 Multi-cycle bug fix</div>
+                  {multiBugfix.map(({t,bugfixCount})=>{
+                    const sc=STATUS_COLOR[t.status]||T.sDo;
+                    return (
+                      <div key={t.id} style={{display:"flex",alignItems:"center",gap:7,padding:"5px 0",borderBottom:`1px solid ${T.b0}`}}>
+                        <span style={{fontSize:10,color:T.t3,fontFamily:"'JetBrains Mono',monospace",flexShrink:0}}>#{t.id}</span>
+                        <span style={{fontSize:11,color:T.t0,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name}</span>
+                        <span style={{fontSize:9,padding:"1px 5px",borderRadius:3,background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`}}>{t.status}</span>
+                        <span style={{fontSize:10,fontFamily:"'JetBrains Mono',monospace",color:T.p1,fontWeight:600,flexShrink:0}}>×{bugfixCount}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {longReview.length===0&&multiBugfix.length===0&&(
+                <div style={{fontSize:11,color:T.t3,fontStyle:"italic"}}>No repeated review or bug-fix cycles — good sprint hygiene ✓</div>
+              )}
+            </Section>
+          )}
 
           {/* Delay log */}
           {taskDelays.length>0&&(
