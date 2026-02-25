@@ -1828,19 +1828,24 @@ function GanttView({tasks, config, predictions, onOpenTask, updateTasks}) {
                 const hasActualEnd=!!t.actualEnd;
                 const pe=taskPredictedEnd(t.id,predictions);
                 const isAtRisk=pe&&fmtDate(pe)>(config.sprintEnd||"2026-03-31")&&!isRel;
+                const isDragTarget=dragInfo?.taskId===t.id;
+                const dragDelta=dragOverCol!==null&&isDragTarget?dragOverCol-dragInfo.startColIdx:0;
+                const previewStartIdx=isDragTarget&&startIdx!==-1?Math.max(0,startIdx+dragDelta):startIdx;
+                const previewEndIdx  =isDragTarget&&endIdx!==-1  ?Math.max(0,endIdx+dragDelta)  :endIdx;
 
                 return (
-                  <div key={t.id} style={{display:"flex",alignItems:"center",borderBottom:`1px solid ${T.b0}`,background:isAtRisk?`${T.p1}05`:ti%2===0?T.bg1:T.bg0}}>
+                  <div key={t.id} style={{display:"flex",alignItems:"center",borderBottom:`1px solid ${T.b0}`,background:isDragTarget?`${T.acc}05`:isAtRisk?`${T.p1}05`:ti%2===0?T.bg1:T.bg0}}>
                     <div style={{width:LABEL_W,minWidth:LABEL_W,padding:"0 14px",display:"flex",alignItems:"center",gap:5,height:ROW_H}}>
                       <span className="tag" style={{background:pc.bgCard,color:pc.bg,fontSize:9,padding:"1px 5px",border:`1px solid ${pc.bg}25`}}>{t.priority}</span>
                       <button onClick={()=>onOpenTask&&onOpenTask(t.id)} style={{background:"none",border:"none",padding:0,cursor:"pointer",flex:1,textAlign:"left",minWidth:0}}>
                         <span style={{fontSize:11,color:isAtRisk?T.p1:T.acc,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"block"}}>{t.name}</span>
                       </button>
                       <span className="tag" style={{background:stc.bg,color:stc.text,fontSize:9,padding:"1px 5px",border:`1px solid ${stc.border}`}}>{t.status.slice(0,3)}</span>
+                      {!isRel&&updateTasks&&<span title="Drag bar to reschedule" style={{fontSize:9,color:T.t3,flexShrink:0}}>⇄</span>}
                     </div>
                     {chartDays.map((d,di)=>{
                       const inBar=startIdx!==-1&&di>=startIdx&&di<=endIdx;
-                      const isStart=di===startIdx, isEnd=di===endIdx;
+                      const showBar=isDragTarget?(previewStartIdx!==-1&&di>=previewStartIdx&&di<=previewEndIdx):inBar;
                       const isHol=config.holidays.includes(d);
                       const isOff=(config.calendarEvents||[]).some(e=>e.person===lane.person&&(e.type==="planned"||e.type==="unplanned")&&e.date===d);
                       const isL2=(config.calendarEvents||[]).some(e=>e.person===lane.person&&e.type==="l2"&&e.date===d);
@@ -1848,14 +1853,46 @@ function GanttView({tasks, config, predictions, onOpenTask, updateTasks}) {
                       const isPreSprint=d<config.sprintStart;
                       const isPostSprint=(config.sprintEnd&&d>config.sprintEnd);
                       let barBg="transparent";
-                      if(inBar) barBg=isRel?`${T.p3}50`:hasActualEnd?`${T.acc}40`:`${lane.color}55`;
+                      if(showBar) barBg=isRel?`${T.p3}50`:hasActualEnd?`${T.acc}40`:`${lane.color}${isDragTarget?"77":"55"}`;
                       const holStripe=`repeating-linear-gradient(45deg,${T.hol}18,${T.hol}18 3px,${T.holBg} 3px,${T.holBg} 8px)`;
-                      const cellBase=isPreSprint&&!inBar?T.bg2:isPostSprint&&!inBar?T.bg2:inBar?barBg:isHol?holStripe:isOff?T.p1bg:isL2?`${T.p2}20`:isTodayCol?`${T.acc}08`:"transparent";
+                      const cellBase=isPreSprint&&!showBar?T.bg2:isPostSprint&&!showBar?T.bg2:showBar?barBg:isHol?holStripe:isOff?T.p1bg:isL2?`${T.p2}20`:isTodayCol?`${T.acc}08`:"transparent";
                       return (
-                        <div key={d} style={{width:COL_W,minWidth:COL_W,height:ROW_H,background:cellBase,opacity:(isPreSprint||isPostSprint)&&!inBar?0.6:1,borderLeft:isStart&&inBar?`2px solid ${lane.color}80`:"none",borderRight:(config.sprintEnd&&d===config.sprintEnd)?`3px solid ${T.p1}`:isEnd&&inBar?`2px solid ${lane.color}80`:isTodayCol?`1px solid ${T.acc}30`:`1px solid ${T.b0}`,position:"relative"}}>
+                        <div key={d}
+                          draggable={!isRel&&!!updateTasks&&inBar}
+                          onDragStart={e=>{
+                            if(isRel||!updateTasks||!inBar) return;
+                            setDragInfo({taskId:t.id,startColIdx:di,origPlannedStart:t.plannedStart});
+                            setDragOverCol(di);
+                            e.dataTransfer.effectAllowed="move";
+                          }}
+                          onDragOver={e=>{e.preventDefault();if(dragInfo?.taskId===t.id)setDragOverCol(di);}}
+                          onDrop={e=>{
+                            e.preventDefault();
+                            if(!dragInfo||dragInfo.taskId!==t.id||dragDelta===0||!updateTasks){setDragInfo(null);setDragOverCol(null);return;}
+                            const newDate=chartDays[Math.max(0,Math.min(chartDays.length-1,startIdx+dragDelta))];
+                            if(newDate) updateTasks(prev=>prev.map(x=>x.id===t.id?{...x,plannedStart:newDate}:x));
+                            setDragInfo(null);setDragOverCol(null);
+                          }}
+                          onDragEnd={()=>{setDragInfo(null);setDragOverCol(null);}}
+                          style={{
+                            width:COL_W,minWidth:COL_W,height:ROW_H,
+                            background:cellBase,
+                            cursor:inBar&&!isRel?"grab":"default",
+                            opacity:(isPreSprint||isPostSprint)&&!showBar?0.6:1,
+                            borderLeft:di===startIdx&&showBar?`2px solid ${lane.color}80`:"none",
+                            borderRight:(config.sprintEnd&&d===config.sprintEnd)?`3px solid ${T.p1}`:di===endIdx&&showBar?`2px solid ${lane.color}80`:isTodayCol?`1px solid ${T.acc}30`:`1px solid ${T.b0}`,
+                            position:"relative",
+                            outline:isDragTarget&&showBar?`1px dashed ${T.acc}`:"none",
+                          }}>
                           {isOff&&inBar&&<div style={{position:"absolute",inset:0,background:`${T.p1}20`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,color:T.p1}}>off</div>}
                           {isHol&&<div style={{position:"absolute",inset:0,background:`${T.hol}15`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:8,color:T.hol,fontWeight:700}}>🎉</div>}
-                          {isL2&&!isPostSprint&&<div title={`${lane.person} on L2 support — no dev capacity`} style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,fontWeight:700,color:T.p2,opacity:inBar?0.8:0.6,letterSpacing:0.2,pointerEvents:"none"}}>L2</div>}
+                          {isL2&&!isPostSprint&&<div title={`${lane.person} on L2`} style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,fontWeight:700,color:T.p2,opacity:inBar?0.8:0.6,letterSpacing:0.2,pointerEvents:"none"}}>L2</div>}
+                          {isDragTarget&&showBar&&di===previewStartIdx&&(
+                            <span style={{position:"absolute",top:"50%",left:2,transform:"translateY(-50%)",fontSize:8,color:"#fff",fontWeight:700,pointerEvents:"none",whiteSpace:"nowrap"}}>
+                              {chartDays[previewStartIdx]?.slice(5)}
+                            </span>
+                          )}
+                          {isTodayCol&&<div style={{position:"absolute",top:0,left:"50%",width:1,height:"100%",background:T.acc,opacity:0.6}}/>}
                         </div>
                       );
                     })}
@@ -1864,6 +1901,7 @@ function GanttView({tasks, config, predictions, onOpenTask, updateTasks}) {
               })}
             </div>
           ))}
+
 
           {/* ── Project / Feature view ── */}
           {ganttMode==="project" && projectRows.map(({task,segments})=>{
