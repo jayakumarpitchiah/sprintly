@@ -1083,10 +1083,10 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
           setTasks(rows.map(r => migrateTask({
             id: r.task_number, name: r.name, priority: r.priority,
             status: r.status,
-            effort: (({_laneStarts, _comments, ...rest}) => rest)(r.effort||{}),
+            effort: (({_laneStarts, ...rest}) => rest)(r.effort||{}),
             owners: r.owners||{},
             laneStarts: r.effort?._laneStarts||{},
-            comments: r.effort?._comments||[],
+            comments: r.comments||[],
             dependsOn: r.depends_on, plannedStart: r.planned_start,
             actualStart: r.actual_start, actualEnd: r.actual_end,
             notes: r.notes, _dbId: r.id,
@@ -1131,13 +1131,14 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
         name: t.name,
         priority: t.priority,
         status: t.status,
-        effort: {...(t.effort||{}), _laneStarts: t.laneStarts||{}, _comments: t.comments||[]},
+        effort: {...(t.effort||{}), _laneStarts: t.laneStarts||{}},
         owners: t.owners||{},
         depends_on: t.dependsOn||null,
         planned_start: t.plannedStart||null,
         actual_start: t.actualStart||null,
         actual_end: t.actualEnd||null,
         notes: t.notes||null,
+        comments: t.comments||[],
       }));
       // Delete existing tasks then reinsert (avoids upsert conflict issues)
       await dbDelete("tasks", `project_id=eq.${projectId}`);
