@@ -46,6 +46,7 @@ create table if not exists tasks (
   actual_start date,
   actual_end date,
   notes text,
+  comments jsonb default '[]',  -- [{id, text, author, ts}]
   created_at timestamptz default now(),
   updated_at timestamptz default now(),
   unique(project_id, task_number)

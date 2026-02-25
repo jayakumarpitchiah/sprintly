@@ -3,55 +3,6 @@ import { supabase, dbGet, dbPost, dbUpsert, dbPatch, dbDelete } from "./supabase
 
 const STORAGE_KEY = "sprintly_v2";
 
-// ─── TOAST ────────────────────────────────────────────────────────────────────
-function Toast({ toasts }) {
-  return (
-    <div style={{position:"fixed",bottom:24,right:24,zIndex:9999,display:"flex",flexDirection:"column",gap:8,pointerEvents:"none"}}>
-      {toasts.map(t=>(
-        <div key={t.id} style={{
-          display:"flex",alignItems:"center",gap:8,
-          background:t.type==="error"?"#fff0f0":t.type==="warn"?"#fffbf0":"#f0fff4",
-          border:`1px solid ${t.type==="error"?"#f0b8b8":t.type==="warn"?"#f0e0a0":"#a8d8b8"}`,
-          borderRadius:8,padding:"9px 14px",fontSize:12,
-          color:t.type==="error"?T.p1:t.type==="warn"?T.p2:T.p3,
-          fontWeight:500,boxShadow:"0 2px 12px rgba(0,0,0,0.12)",
-          animation:"slideUp 0.2s ease",pointerEvents:"auto",
-          minWidth:220,maxWidth:340,
-        }}>
-          <span style={{fontSize:14}}>{t.type==="error"?"✕":t.type==="warn"?"⚠":"✓"}</span>
-          <span style={{flex:1}}>{t.msg}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function useToast() {
-  const [toasts, setToasts] = useState([]);
-  const push = useCallback((msg, type="success", dur=2800) => {
-    const id = Date.now() + Math.random();
-    setToasts(p => [...p, {id, msg, type}]);
-    setTimeout(() => setToasts(p => p.filter(t=>t.id!==id)), dur);
-  }, []);
-  return { toasts, push };
-}
-
-// ─── KEYBOARD SHORTCUTS (H5) ─────────────────────────────────────────────────
-function useKeyboardShortcuts(handlers) {
-  const ref = useRef(handlers);
-  useEffect(() => { ref.current = handlers; });
-  useEffect(() => {
-    const onKey = (e) => {
-      const tag = e.target.tagName;
-      if (["INPUT","TEXTAREA","SELECT"].includes(tag)) return;
-      const h = ref.current[e.key];
-      if (h) { e.preventDefault(); h(e); }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-}
-
 // ─── DESIGN TOKENS ────────────────────────────────────────────────────────────
 const T = {
   bg0: "#ffffff", bg1: "#f8f9fa", bg2: "#f1f3f5", bg3: "#e9ecef",
@@ -1066,7 +1017,6 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
-  const { toasts, push: pushToast } = useToast();
 
   useEffect(() => {
     if (!projectId) return;
@@ -1083,10 +1033,9 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
           setTasks(rows.map(r => migrateTask({
             id: r.task_number, name: r.name, priority: r.priority,
             status: r.status,
-            effort: (({_laneStarts, _comments, ...rest}) => rest)(r.effort||{}),
+            effort: (({_laneStarts, ...rest}) => rest)(r.effort||{}),
             owners: r.owners||{},
             laneStarts: r.effort?._laneStarts||{},
-            comments: r.effort?._comments||[],
             dependsOn: r.depends_on, plannedStart: r.planned_start,
             actualStart: r.actual_start, actualEnd: r.actual_end,
             notes: r.notes, _dbId: r.id,
@@ -1131,7 +1080,7 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
         name: t.name,
         priority: t.priority,
         status: t.status,
-        effort: {...(t.effort||{}), _laneStarts: t.laneStarts||{}, _comments: t.comments||[]},
+        effort: {...(t.effort||{}), _laneStarts: t.laneStarts||{}},
         owners: t.owners||{},
         depends_on: t.dependsOn||null,
         planned_start: t.plannedStart||null,
@@ -1152,9 +1101,9 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
           task_id: e.taskId||null, extra_days: e.extraDays||null, reason: e.reason||null,
         })));
       }
-    } catch(e) { console.error("Save error", e); pushToast("Save failed — check your connection and retry", "error", 5000); }
+    } catch(e) { console.error("Save error", e); }
     setTimeout(()=>setSaving(false), 600);
-  },[projectId, pushToast]);
+  },[projectId]);
 
   // Stamp plannedEnd on tasks that have full effort but no plannedEnd yet.
   // plannedEnd = the first prediction when a task is "ready" — freezes on first lock.
@@ -1188,28 +1137,9 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
     });
   },[save]);
 
-  // ── keyboard shortcuts (H5) ──────────────────────────────────────────────
-  const [focusedTaskIdx, setFocusedTaskIdx] = useState(0);
-  const [taskDrawerTask, setTaskDrawerTask] = useState(null); // for task detail drawer
-
   const predictions = useMemo(()=>computePredictions(tasks,config),[tasks,config]);
-  const velocity = useMemo(()=>computeVelocity(tasks),[tasks,config]);
+  const velocity = useMemo(()=>computeVelocity(tasks),[tasks]);
   const cycles = useMemo(()=>findCycles(tasks),[tasks]);
-
-  const sortedTasksForNav = useMemo(()=>[...tasks].sort((a,b)=>(PRIORITY_ORDER[a.priority]??3)-(PRIORITY_ORDER[b.priority]??3)),[tasks]);
-
-  useKeyboardShortcuts({
-    "j": () => setFocusedTaskIdx(i => Math.min(i+1, sortedTasksForNav.length-1)),
-    "k": () => setFocusedTaskIdx(i => Math.max(i-1, 0)),
-    "e": () => { if(view==="table") setEditMode(m=>!m); },
-    "c": () => { if(view==="table") { setView("table"); setEditMode(true); /* trigger drawer via event */ window.dispatchEvent(new CustomEvent("sprintly:addtask")); } },
-    "1": () => setView("dashboard"),
-    "2": () => setView("gantt"),
-    "3": () => setView("table"),
-    "4": () => setView("capacity"),
-    "5": () => setView("insights"),
-    "?": () => window.dispatchEvent(new CustomEvent("sprintly:shortcuts")),
-  });
 
   if (!loaded) return (
     <div style={{background:T.bg0,height:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}>
@@ -1231,34 +1161,20 @@ export default function App({ projectId, projectName, orgName, user, onBackToPro
         .tag{display:inline-flex;align-items:center;padding:2px 7px;border-radius:3px;font-size:10px;font-weight:500;letter-spacing:0.3px;}
         .fade-in{animation:fadeIn 0.2s ease;}
         @keyframes fadeIn{from{opacity:0;transform:translateY(3px);}to{opacity:1;transform:none;}}
-        @keyframes slideUp{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:none;}}
         select option{background:${T.bg0};color:${T.t0};}
         .frozen-col{position:sticky;left:0;z-index:5;background:inherit;}
         .frozen-header{position:sticky;top:52px;z-index:20;}
-        @media(max-width:640px){.desktop-only{display:none!important;}.mobile-only{display:flex!important;}}
-        @media(min-width:641px){.mobile-only{display:none!important;}}
       `}</style>
       <Header editMode={editMode} setEditMode={setEditMode} view={view} setView={setView} saving={saving} onCalendar={()=>setCalendarOpen(o=>!o)} calendarOpen={calendarOpen} config={config} projectName={projectName} orgName={orgName} onBackToProjects={onBackToProjects} onInvite={onInvite} onSignOut={onSignOut}/>
       <div style={{paddingTop:52}}>
-        {/* Mobile standup view (C4) */}
-        <div className="mobile-only" style={{display:"none"}}>
-          <MobileStandupView tasks={tasks} updateTasks={updateTasks} predictions={predictions} config={config} pushToast={pushToast}/>
-        </div>
-        {/* Desktop views */}
-        <div className="desktop-only">
-          {view==="dashboard"&&<Dashboard tasks={tasks} config={config} predictions={predictions}/>}
-          {view==="gantt"    &&<GanttView tasks={tasks} config={config} predictions={predictions} onOpenTask={setTaskDrawerTask}/>}
-          {view==="table"    &&<TableView tasks={tasks} config={config} editMode={editMode} updateTasks={updateTasks} updateConfig={updateConfig} predictions={predictions} velocity={velocity} cycles={cycles} pushToast={pushToast} onOpenTask={setTaskDrawerTask} focusedTaskIdx={focusedTaskIdx}/>}
-          {view==="capacity" &&<CapacityView tasks={tasks} config={config} predictions={predictions}/>}
-          {view==="insights" &&<InsightsView tasks={tasks} config={config} predictions={predictions} velocity={velocity}/>}
-        </div>
+        {view==="dashboard"&&<Dashboard tasks={tasks} config={config} predictions={predictions}/>}
+        {view==="gantt"    &&<GanttView tasks={tasks} config={config} predictions={predictions}/>}
+        {view==="table"    &&<TableView tasks={tasks} config={config} editMode={editMode} updateTasks={updateTasks} updateConfig={updateConfig} predictions={predictions} velocity={velocity} cycles={cycles}/>}
+        {view==="capacity" &&<CapacityView tasks={tasks} config={config} predictions={predictions}/>}
+        {view==="insights" &&<InsightsView tasks={tasks} config={config} predictions={predictions} velocity={velocity}/>}
       </div>
       {calendarOpen&&<TeamCalendarPanel config={config} updateConfig={updateConfig} tasks={tasks} onClose={()=>setCalendarOpen(false)}/>}
-      {/* Task detail drawer (C2+C3) */}
-      {taskDrawerTask!==null&&<TaskDetailDrawer task={tasks.find(t=>t.id===taskDrawerTask)||tasks[0]} tasks={tasks} updateTasks={updateTasks} config={config} predictions={predictions} pushToast={pushToast} onClose={()=>setTaskDrawerTask(null)}/>}
     </div>
-    <Toast toasts={toasts}/>
-    <ShortcutsOverlay/>
     </>
   );
 }
@@ -1293,10 +1209,7 @@ function Header({editMode,setEditMode,view,setView,saving,onCalendar,calendarOpe
         ))}
       </div>
       <div style={{display:"flex",alignItems:"center",gap:10}}>
-        {saving
-          ? <span style={{fontSize:10,color:T.p2,fontFamily:"'JetBrains Mono',monospace",display:"flex",alignItems:"center",gap:4}}><span style={{width:6,height:6,borderRadius:"50%",background:T.p2,display:"inline-block",animation:"pulse 1s infinite"}}/>saving…</span>
-          : <span style={{fontSize:9,color:T.t3,fontFamily:"'JetBrains Mono',monospace",cursor:"default"}} title="Keyboard shortcuts: J/K navigate · E edit · C create · 1-5 tabs · ? help">? shortcuts</span>
-        }
+        {saving&&<span style={{fontSize:10,color:T.t2,fontFamily:"'JetBrains Mono',monospace"}}>saving…</span>}
         <button className="btn" onClick={onCalendar} style={{
           padding:"5px 12px",borderRadius:5,fontSize:11,fontWeight:500,
           background:calendarOpen?T.bg3:"transparent",color:calendarOpen?T.acc:T.t2,
@@ -1338,6 +1251,7 @@ function Dashboard({tasks, config, predictions}) {
   const p1tasks = tasks.filter(t=>t.priority==="P1");
   const p1done = p1tasks.filter(t=>t.status==="Released").length;
 
+  // At risk: predicted end > sprint end
   const sprintEndStr = config.sprintEnd||"2026-03-31";
   const isBufferTask=t=>t.name?.toLowerCase().includes("buffer");
   const atRisk = tasks.filter(t=>{
@@ -1346,60 +1260,6 @@ function Dashboard({tasks, config, predictions}) {
     const pe = taskPredictedEnd(t.id, predictions);
     return pe && fmtDate(pe) > sprintEndStr;
   });
-
-  // ── Opinionated sprint health narrative (H3) ─────────────────────────────
-  const sprintNarrative = useMemo(() => {
-    const totalActive = tasks.filter(t=>t.status!=="Released"&&t.status!=="Descoped").length;
-    if (totalActive === 0) return { tone:"success", text:"All tasks released — sprint complete! 🎉" };
-
-    // Find latest predicted end across all at-risk tasks
-    const latestRisk = atRisk.reduce((max, t) => {
-      const pe = taskPredictedEnd(t.id, predictions);
-      return pe && fmtDate(pe) > max ? fmtDate(pe) : max;
-    }, "");
-    const daysOver = latestRisk ? Math.ceil((parseDate(latestRisk)-end)/86400000) : 0;
-
-    // Find most overloaded person
-    const effortByPerson = {};
-    tasks.filter(t=>t.status!=="Released"&&t.status!=="Descoped").forEach(t=>{
-      ["ios","and","be","wc","qa"].forEach(l=>{
-        const p = t.owners?.[l]; const e = Number(t.effort?.[l]||0);
-        if(p && e>0) effortByPerson[p] = (effortByPerson[p]||0) + e;
-      });
-    });
-    const overloaded = Object.entries(effortByPerson).filter(([p,e])=>e>daysLeft+2).sort((a,b)=>b[1]-a[1])[0];
-
-    // Find best descope candidate: P2/P3, no actualStart, highest effort
-    const descopeCandidate = tasks.filter(t=>
-      t.status!=="Released"&&t.status!=="Descoped"&&t.status!=="In Dev"&&
-      t.priority!=="P1"&&!t.actualStart
-    ).sort((a,b)=>{
-      const ae=Object.values(a.effort||{}).reduce((s,v)=>s+Number(v),0);
-      const be=Object.values(b.effort||{}).reduce((s,v)=>s+Number(v),0);
-      return be-ae;
-    })[0];
-
-    // Critical path task (highest-effort at-risk P1)
-    const criticalTask = atRisk.filter(t=>t.priority==="P1")[0] || atRisk[0];
-
-    if (atRisk.length === 0 && blockers.length === 0) {
-      return { tone:"success", text:`Sprint looks healthy — ${released} of ${tasks.length} tasks done, ${daysLeft} days left. Keep the pace.` };
-    }
-    if (atRisk.length > 0) {
-      let msg = `Sprint is ${daysOver > 0 ? `${daysOver} day${daysOver>1?"s":""} over` : "at risk"}. `;
-      if (criticalTask) msg += `Critical path: #${criticalTask.id} ${criticalTask.name.slice(0,30)}${criticalTask.name.length>30?"…":""}. `;
-      if (overloaded) msg += `${overloaded[0]} is overloaded by ~${overloaded[1]-daysLeft}d. `;
-      if (descopeCandidate) {
-        const de = Object.values(descopeCandidate.effort||{}).reduce((s,v)=>s+Number(v),0);
-        msg += `Suggest descoping #${descopeCandidate.id} (${descopeCandidate.priority}, ${de}d effort, not started).`;
-      }
-      return { tone:"error", text: msg };
-    }
-    if (blockers.length > 0) {
-      return { tone:"warn", text:`${blockers.length} task${blockers.length>1?"s are":" is"} blocked: ${blockers.map(t=>`#${t.id} ${t.name.slice(0,20)}`).join(", ")}. Resolve before they cascade.` };
-    }
-    return { tone:"success", text:`${released} of ${tasks.length} tasks done. ${daysLeft} days left.` };
-  }, [tasks, predictions, atRisk, blockers, released, daysLeft, end]);
 
   const StatCard = ({label,value,sub,color})=>(
     <div style={{background:T.bg1,border:`1px solid ${T.b1}`,borderRadius:8,padding:"14px 16px"}} className="fade-in">
@@ -1411,16 +1271,6 @@ function Dashboard({tasks, config, predictions}) {
 
   return (
     <div style={{padding:"20px 24px",maxWidth:1100,margin:"0 auto"}} className="fade-in">
-      {/* Sprint health narrative (H3) */}
-      <div style={{
-        marginBottom:16,padding:"13px 16px",borderRadius:8,
-        background:sprintNarrative.tone==="error"?T.p1bg:sprintNarrative.tone==="warn"?T.p2bg:T.p3bg,
-        border:`1px solid ${sprintNarrative.tone==="error"?T.sBlk.border:sprintNarrative.tone==="warn"?T.sDev.border:T.sQA.border}`,
-        display:"flex",gap:10,alignItems:"flex-start",
-      }}>
-        <span style={{fontSize:16,flexShrink:0,marginTop:1}}>{sprintNarrative.tone==="error"?"⚠️":sprintNarrative.tone==="warn"?"🟡":"✅"}</span>
-        <p style={{fontSize:13,color:sprintNarrative.tone==="error"?T.p1:sprintNarrative.tone==="warn"?T.p2:T.p3,fontWeight:500,lineHeight:1.6,margin:0}}>{sprintNarrative.text}</p>
-      </div>
       <div style={{marginBottom:20}}>
         <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
           <span style={{fontSize:10,color:T.t2,textTransform:"uppercase",letterSpacing:0.8,fontWeight:500}}>Sprint progress</span>
@@ -1530,7 +1380,7 @@ function Dashboard({tasks, config, predictions}) {
 }
 
 // ─── GANTT VIEW ───────────────────────────────────────────────────────────────
-function GanttView({tasks, config, predictions, onOpenTask}) {
+function GanttView({tasks, config, predictions}) {
   const today = fmtDate(new Date());
   const [ganttMode, setGanttMode] = useState("person");   // "person" | "project"
   const [hideReleased, setHideReleased] = useState(true);
@@ -1822,9 +1672,7 @@ function GanttView({tasks, config, predictions, onOpenTask}) {
                   <div key={t.id} style={{display:"flex",alignItems:"center",borderBottom:`1px solid ${T.b0}`,background:isAtRisk?`${T.p1}05`:ti%2===0?T.bg1:T.bg0}}>
                     <div style={{width:LABEL_W,minWidth:LABEL_W,padding:"0 14px",display:"flex",alignItems:"center",gap:5,height:ROW_H}}>
                       <span className="tag" style={{background:pc.bgCard,color:pc.bg,fontSize:9,padding:"1px 5px",border:`1px solid ${pc.bg}25`}}>{t.priority}</span>
-                      <button onClick={()=>onOpenTask&&onOpenTask(t.id)} style={{background:"none",border:"none",padding:0,cursor:"pointer",flex:1,textAlign:"left",minWidth:0}}>
-                        <span style={{fontSize:11,color:isAtRisk?T.p1:T.acc,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"block"}}>{t.name}</span>
-                      </button>
+                      <span style={{fontSize:11,color:isAtRisk?T.p1:T.t1,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.name}</span>
                       <span className="tag" style={{background:stc.bg,color:stc.text,fontSize:9,padding:"1px 5px",border:`1px solid ${stc.border}`}}>{t.status.slice(0,3)}</span>
                     </div>
                     {chartDays.map((d,di)=>{
@@ -1923,7 +1771,7 @@ function GanttView({tasks, config, predictions, onOpenTask}) {
 }
 
 // ─── TABLE VIEW ───────────────────────────────────────────────────────────────
-function TableView({tasks, config, editMode, updateTasks, updateConfig, predictions, velocity, cycles=[], pushToast, onOpenTask, focusedTaskIdx}) {
+function TableView({tasks, config, editMode, updateTasks, updateConfig, predictions, velocity, cycles=[]}) {
   const [sortBy,setSortBy] = useState("priority");
   const [filterStatus,setFilterStatus] = useState("All");
   const [filterPersons,setFilterPersons] = useState(new Set());
@@ -2141,9 +1989,7 @@ function TableView({tasks, config, editMode, updateTasks, updateConfig, predicti
                   <td style={{padding:"5px 10px",maxWidth:220,minWidth:160,position:"sticky",left:0,background:bg,zIndex:4,boxShadow:"2px 0 4px rgba(0,0,0,0.04)"}}>
                     {editMode
                       ?<input type="text" value={t.name} onChange={e=>update(t.id,"name",e.target.value)} style={{background:"transparent",color:T.t0,border:"none",borderBottom:`1px solid ${T.b2}`,padding:"1px 0",fontSize:12,width:"100%",outline:"none"}}/>
-                      :<button onClick={()=>onOpenTask&&onOpenTask(t.id)} style={{background:"none",border:"none",padding:0,cursor:"pointer",textAlign:"left",width:"100%"}}>
-                        <span style={{fontSize:12,color:isAtRisk?T.p1:T.acc,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",display:"block",maxWidth:200,textDecoration:"none"}} title={t.name}>{isAtRisk?"⚠ ":""}{t.name}</span>
-                      </button>
+                      :<span style={{fontSize:12,color:isAtRisk?T.p1:T.t0,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",display:"block",maxWidth:200}} title={t.name}>{isAtRisk?"⚠ ":""}{t.name}</span>
                     }
                   </td>
                   {/* Combined lane cells: effort + owner + per-lane dates */}
@@ -2706,11 +2552,6 @@ function InsightsView({tasks, config, predictions, velocity}) {
         ))}
       </div>
 
-      {/* Burndown chart (H6) */}
-      <div style={{marginBottom:18}}>
-        <BurndownChart tasks={tasks} config={config}/>
-      </div>
-
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
         <div>
           <Section title="At risk — predicted past Mar 31" count={atRisk.length} color={T.p1}>
@@ -2850,448 +2691,6 @@ function InsightsView({tasks, config, predictions, velocity}) {
           <div style={{marginTop:10,fontSize:10,color:T.t3}}>Velocity data builds automatically as you fill in planned + actual end dates in Tasks tab. Warnings (⚠) appear next to owner names when avg slip ≥ 3 days across ≥ 2 tasks.</div>
         </Section>
       )}
-    </div>
-  );
-}
-
-// ─── TASK DETAIL DRAWER (C2 + C3 + H4 comments) ──────────────────────────────
-function TaskDetailDrawer({ task, tasks, updateTasks, config, predictions, pushToast, onClose }) {
-  const [form, setForm] = useState({...task});
-  const [newComment, setNewComment] = useState("");
-  const [activeTab, setActiveTab] = useState("details");
-
-  useEffect(() => { setForm({...task}); }, [task.id]);
-
-  const set = (k, v) => setForm(f => ({...f, [k]: v}));
-  const setO = (l, v) => setForm(f => ({...f, owners: {...f.owners, [l]: v}}));
-  const setE = (l, v) => setForm(f => ({...f, effort: {...f.effort, [l]: Number(v)||0}}));
-  const setLS = (l, field, v) => setForm(f => ({...f, laneStarts: {...(f.laneStarts||{}), [l]: {...(f.laneStarts?.[l]||{}), [field]: v}}}));
-
-  const livePred = useMemo(() => {
-    const tmpTasks = tasks.map(t => t.id === form.id ? form : t);
-    const p = computePredictions(tmpTasks, config);
-    const pe = taskPredictedEnd(form.id, p);
-    return pe ? fmtDate(pe) : null;
-  }, [form, tasks, config]);
-
-  const isAtRisk = livePred && livePred > (config.sprintEnd||"2026-03-31");
-
-  const save = () => {
-    updateTasks(prev => prev.map(t => t.id === form.id ? {...form} : t));
-    pushToast(`#${form.id} ${form.name.slice(0,24)} saved`, "success");
-    onClose();
-  };
-
-  const addComment = () => {
-    if (!newComment.trim()) return;
-    const comment = { id: Date.now(), text: newComment.trim(), author: "You", ts: new Date().toISOString() };
-    const comments = [...(form.comments||[]), comment];
-    set("comments", comments);
-    setNewComment("");
-  };
-
-  const laneLabels = {ios:"iOS", and:"Android", be:"Backend", wc:"Web/Dashboard", qa:"QA"};
-  const inp = {background:T.bg2,color:T.t0,border:`1px solid ${T.b2}`,borderRadius:5,padding:"6px 9px",fontSize:12,width:"100%",fontFamily:"inherit"};
-  const sc = STATUS_COLOR[form.status]||T.sDo;
-  const pc = PRIORITY_COLOR[form.priority]||PRIORITY_COLOR.P3;
-
-  const laneColors = {ios:"#5b8af0",and:"#7c6af0",be:"#5ba8a0",wc:"#4a8a5a",qa:"#c8972c"};
-
-  return (
-    <div style={{position:"fixed",inset:0,zIndex:500,display:"flex"}}>
-      <div style={{flex:1,background:"#00000030"}} onClick={onClose}/>
-      <div style={{width:480,background:T.bg0,borderLeft:`1px solid ${T.b1}`,display:"flex",flexDirection:"column",height:"100%",overflow:"hidden"}}>
-        {/* Header */}
-        <div style={{padding:"14px 18px",borderBottom:`1px solid ${T.b1}`,background:T.bg1,flexShrink:0}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
-            <div style={{display:"flex",alignItems:"center",gap:7}}>
-              <span style={{fontSize:10,color:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>#{form.id}</span>
-              <span className="tag" style={{background:pc.bgCard,color:pc.bg,border:`1px solid ${pc.bg}30`}}>{form.priority}</span>
-              <span className="tag" style={{background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`}}>{form.status}</span>
-            </div>
-            <button onClick={onClose} style={{background:"transparent",color:T.t2,fontSize:18,border:"none",cursor:"pointer",padding:"0 4px",lineHeight:1}}>×</button>
-          </div>
-          <div style={{fontSize:14,fontWeight:600,color:T.t0,lineHeight:1.4,marginBottom:6}}>{form.name}</div>
-          {/* Prediction pill */}
-          <div style={{display:"inline-flex",alignItems:"center",gap:6,padding:"4px 10px",borderRadius:20,background:isAtRisk?T.p1bg:T.p3bg,border:`1px solid ${isAtRisk?T.sBlk.border:T.sQA.border}`}}>
-            <span style={{fontSize:10,color:T.t2}}>Predicted end:</span>
-            <span style={{fontSize:12,fontWeight:600,fontFamily:"'JetBrains Mono',monospace",color:isAtRisk?T.p1:T.p3}}>{livePred||"—"}</span>
-            {isAtRisk&&<span style={{fontSize:10,color:T.p1}}>⚠ overrun</span>}
-          </div>
-        </div>
-
-        {/* Tabs */}
-        <div style={{display:"flex",borderBottom:`1px solid ${T.b1}`,background:T.bg1,flexShrink:0}}>
-          {[["details","📋 Details"],["lanes","🏊 Lanes"],["comments","💬 Comments"]].map(([id,label])=>(
-            <button key={id} onClick={()=>setActiveTab(id)} style={{
-              flex:1,padding:"8px 0",fontSize:11,fontWeight:500,border:"none",cursor:"pointer",
-              background:activeTab===id?T.bg0:"transparent",
-              color:activeTab===id?T.acc:T.t2,
-              borderBottom:activeTab===id?`2px solid ${T.acc}`:"2px solid transparent",
-            }}>{label}{id==="comments"&&(form.comments||[]).length>0&&<span style={{marginLeft:4,fontSize:9,background:T.acc,color:"#fff",borderRadius:8,padding:"1px 5px"}}>{(form.comments||[]).length}</span>}</button>
-          ))}
-        </div>
-
-        {/* Body */}
-        <div style={{flex:1,overflowY:"auto",padding:16}}>
-          {activeTab==="details" && (
-            <>
-              <div style={{marginBottom:12}}>
-                <label style={{fontSize:10,color:T.t2,display:"block",marginBottom:4,textTransform:"uppercase",letterSpacing:0.5}}>Task Name</label>
-                <textarea value={form.name} onChange={e=>set("name",e.target.value)} rows={2} style={{...inp,resize:"vertical"}}/>
-              </div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
-                <div>
-                  <label style={{fontSize:10,color:T.t2,display:"block",marginBottom:4,textTransform:"uppercase",letterSpacing:0.5}}>Priority</label>
-                  <select value={form.priority} onChange={e=>set("priority",e.target.value)} style={{...inp,cursor:"pointer"}}>
-                    {["P1","P2","P3"].map(p=><option key={p} value={p}>{p}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label style={{fontSize:10,color:T.t2,display:"block",marginBottom:4,textTransform:"uppercase",letterSpacing:0.5}}>Status</label>
-                  <select value={form.status} onChange={e=>set("status",e.target.value)} style={{...inp,cursor:"pointer"}}>
-                    {STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
-                  </select>
-                </div>
-              </div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
-                <div>
-                  <label style={{fontSize:10,color:T.t2,display:"block",marginBottom:4,textTransform:"uppercase",letterSpacing:0.5}}>Planned Start</label>
-                  <input type="date" value={form.plannedStart||""} onChange={e=>set("plannedStart",e.target.value)} style={inp}/>
-                </div>
-                <div>
-                  <label style={{fontSize:10,color:T.t2,display:"block",marginBottom:4,textTransform:"uppercase",letterSpacing:0.5}}>Actual Start</label>
-                  <input type="date" value={form.actualStart||""} onChange={e=>set("actualStart",e.target.value)} style={inp}/>
-                </div>
-                <div>
-                  <label style={{fontSize:10,color:T.t2,display:"block",marginBottom:4,textTransform:"uppercase",letterSpacing:0.5}}>Actual End</label>
-                  <input type="date" value={form.actualEnd||""} onChange={e=>set("actualEnd",e.target.value)} style={inp}/>
-                </div>
-                <div>
-                  <label style={{fontSize:10,color:T.t2,display:"block",marginBottom:4,textTransform:"uppercase",letterSpacing:0.5}}>Depends On</label>
-                  <input type="text" value={(form.dependsOn||[]).join(",")} placeholder="5,12" onChange={e=>set("dependsOn",e.target.value.split(",").map(v=>parseInt(v.trim())).filter(n=>!isNaN(n)&&n!==form.id))} style={inp}/>
-                </div>
-              </div>
-              <div style={{marginBottom:12}}>
-                <label style={{fontSize:10,color:T.t2,display:"block",marginBottom:4,textTransform:"uppercase",letterSpacing:0.5}}>Notes</label>
-                <textarea value={form.notes||""} onChange={e=>set("notes",e.target.value)} rows={2} placeholder="Any context, TBCs, links…" style={{...inp,resize:"vertical"}}/>
-              </div>
-            </>
-          )}
-
-          {activeTab==="lanes" && (
-            <>
-              <div style={{fontSize:10,color:T.t2,marginBottom:12,padding:"8px 10px",background:T.bg2,borderRadius:6,border:`1px solid ${T.b1}`}}>
-                Set owner + effort per lane. Lane-specific dates are optional overrides.
-              </div>
-              {Object.entries(laneLabels).map(([l,label])=>{
-                const lc = laneColors[l];
-                const ls = form.laneStarts?.[l]||{};
-                const hasOwner = !!form.owners?.[l];
-                const hasEffort = Number(form.effort?.[l]||0) > 0;
-                const pred_lane = predictions[form.id]?.[l];
-                const laneEnd = pred_lane?.end ? fmtDate(pred_lane.end) : null;
-                return (
-                  <div key={l} style={{marginBottom:14,padding:12,border:`1px solid ${hasOwner&&hasEffort?`${lc}40`:T.b1}`,borderRadius:7,background:hasOwner&&hasEffort?`${lc}06`:T.bg1}}>
-                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
-                      <span style={{fontSize:11,fontWeight:600,color:lc}}>{label}</span>
-                      {laneEnd&&<span style={{fontSize:10,fontFamily:"'JetBrains Mono',monospace",color:laneEnd>(config.sprintEnd||"2026-03-31")?T.p1:T.p3,marginLeft:"auto"}}>→ {laneEnd.slice(5)}</span>}
-                    </div>
-                    <div style={{display:"grid",gridTemplateColumns:"1fr 80px",gap:8,marginBottom: hasOwner&&hasEffort?8:0}}>
-                      <div>
-                        <label style={{fontSize:9,color:T.t3,display:"block",marginBottom:3}}>OWNER</label>
-                        <select value={form.owners?.[l]||""} onChange={e=>setO(l,e.target.value)} style={{...inp,padding:"5px 7px",fontSize:11}}>
-                          <option value="">— nobody —</option>
-                          {TEAM_NAMES.map(p=><option key={p} value={p}>{p}</option>)}
-                        </select>
-                      </div>
-                      <div>
-                        <label style={{fontSize:9,color:T.t3,display:"block",marginBottom:3}}>EFFORT (d)</label>
-                        <input type="number" min={0} step={0.5} value={form.effort?.[l]||""} onChange={e=>setE(l,e.target.value)} disabled={!form.owners?.[l]} placeholder="0" style={{...inp,padding:"5px 7px",fontSize:11,textAlign:"center",fontFamily:"'JetBrains Mono',monospace"}}/>
-                      </div>
-                    </div>
-                    {hasOwner && hasEffort && (
-                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6}}>
-                        {[["plannedStart","Plan Start",T.t2],["actualStart","Act Start",T.p3],["actualEnd","Act End",T.p1]].map(([field,lbl,col])=>(
-                          <div key={field}>
-                            <label style={{fontSize:9,color:T.t3,display:"block",marginBottom:2}}>{lbl.toUpperCase()}</label>
-                            <input type="date" value={ls[field]||""} onChange={e=>setLS(l,field,e.target.value)} style={{...inp,padding:"4px 5px",fontSize:10,color:col,fontFamily:"'JetBrains Mono',monospace"}}/>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </>
-          )}
-
-          {activeTab==="comments" && (
-            <>
-              <div style={{marginBottom:12}}>
-                <div style={{display:"flex",gap:7}}>
-                  <textarea value={newComment} onChange={e=>setNewComment(e.target.value)} placeholder="Add a comment… (supports @mentions)" rows={2}
-                    onKeyDown={e=>{if(e.key==="Enter"&&(e.metaKey||e.ctrlKey)){e.preventDefault();addComment();}}}
-                    style={{...inp,resize:"vertical",flex:1}}/>
-                  <button onClick={addComment} disabled={!newComment.trim()} style={{padding:"6px 12px",borderRadius:5,background:newComment.trim()?T.acc:"#ccc",color:"#fff",border:"none",cursor:newComment.trim()?"pointer":"default",fontSize:11,fontWeight:500,alignSelf:"flex-end",flexShrink:0}}>Post</button>
-                </div>
-                <div style={{fontSize:9,color:T.t3,marginTop:4}}>Cmd/Ctrl+Enter to post</div>
-              </div>
-              {(form.comments||[]).length===0&&(
-                <div style={{padding:"24px 0",textAlign:"center",fontSize:12,color:T.t3,fontStyle:"italic"}}>No comments yet — be the first</div>
-              )}
-              {[...(form.comments||[])].reverse().map(c=>(
-                <div key={c.id} style={{padding:"10px 12px",background:T.bg1,border:`1px solid ${T.b1}`,borderRadius:6,marginBottom:8}}>
-                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
-                    <span style={{fontSize:11,fontWeight:500,color:T.acc}}>{c.author}</span>
-                    <span style={{fontSize:9,color:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>{new Date(c.ts).toLocaleString("en-GB",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})}</span>
-                  </div>
-                  <p style={{fontSize:12,color:T.t1,lineHeight:1.5,margin:0,whiteSpace:"pre-wrap"}}>{c.text}</p>
-                </div>
-              ))}
-            </>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div style={{padding:"12px 16px",borderTop:`1px solid ${T.b1}`,display:"flex",gap:8,flexShrink:0,background:T.bg1}}>
-          <button onClick={save} style={{flex:1,padding:"8px 0",borderRadius:6,background:T.acc,color:"#fff",fontSize:13,fontWeight:500,border:"none",cursor:"pointer"}}>Save changes</button>
-          <button onClick={onClose} style={{padding:"8px 14px",borderRadius:6,background:T.bg2,color:T.t1,border:`1px solid ${T.b2}`,fontSize:13,cursor:"pointer"}}>Cancel</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── MOBILE STANDUP VIEW (C4) ──────────────────────────────────────────────────
-function MobileStandupView({ tasks, updateTasks, predictions, config, pushToast }) {
-  const [filter, setFilter] = useState("active");
-  const sprintEnd = config.sprintEnd||"2026-03-31";
-
-  const STATUS_NEXT = {
-    "Planned": "To Do", "To Do": "In Dev", "In Dev": "In QA",
-    "In QA": "Released", "Blocked": "In Dev", "Descoped": "Planned"
-  };
-
-  const visible = useMemo(() => {
-    let t = [...tasks].sort((a,b)=>(PRIORITY_ORDER[a.priority]??3)-(PRIORITY_ORDER[b.priority]??3));
-    if (filter==="active") t = t.filter(x=>!["Released","Descoped"].includes(x.status));
-    if (filter==="mine")   t = t.filter(x=>["Released","Descoped"].includes(x.status)===false);
-    if (filter==="risk")   t = t.filter(x=>{
-      const pe=taskPredictedEnd(x.id,predictions);
-      return pe&&fmtDate(pe)>sprintEnd&&x.status!=="Released"&&x.status!=="Descoped";
-    });
-    return t;
-  },[tasks,filter,predictions,sprintEnd]);
-
-  const setStatus = (id, status) => {
-    updateTasks(prev=>prev.map(t=>t.id===id?{...t,status}:t));
-    pushToast(`Marked ${status}`, "success", 1800);
-  };
-
-  const release = (id, name) => {
-    updateTasks(prev=>prev.map(t=>t.id===id?{...t,status:"Released",actualEnd:fmtDate(new Date())}:t));
-    pushToast(`✓ ${name.slice(0,28)} released!`, "success");
-  };
-
-  return (
-    <div style={{minHeight:"calc(100vh - 52px)",background:T.bg0,padding:0}}>
-      {/* Mobile header strip */}
-      <div style={{padding:"10px 14px",background:T.bg1,borderBottom:`1px solid ${T.b1}`,display:"flex",gap:6}}>
-        {[["active","Active"],["risk","⚠ At Risk"],["all","All"]].map(([id,label])=>(
-          <button key={id} onClick={()=>setFilter(id)} style={{
-            flex:1,padding:"7px 0",fontSize:11,fontWeight:500,borderRadius:5,border:"none",cursor:"pointer",
-            background:filter===id?T.acc:T.bg2,color:filter===id?"#fff":T.t2,
-          }}>{label}</button>
-        ))}
-      </div>
-      {/* Task cards */}
-      <div style={{padding:"8px 10px",display:"flex",flexDirection:"column",gap:6}}>
-        {visible.map(t=>{
-          const pe = taskPredictedEnd(t.id, predictions);
-          const peStr = pe ? fmtDate(pe) : "";
-          const isAtRisk = peStr && peStr > sprintEnd;
-          const pc = PRIORITY_COLOR[t.priority]||PRIORITY_COLOR.P3;
-          const sc = STATUS_COLOR[t.status]||T.sDo;
-          const owners = [...new Set(["ios","and","be","wc","qa"].map(l=>t.owners?.[l]).filter(Boolean))];
-          const nextStatus = STATUS_NEXT[t.status];
-          return (
-            <div key={t.id} style={{background:T.bg1,border:`1px solid ${isAtRisk?T.sBlk.border:T.b1}`,borderRadius:8,padding:"10px 12px",borderLeft:`3px solid ${pc.bg}`}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:13,fontWeight:500,color:T.t0,lineHeight:1.4,marginBottom:3}}>{t.name}</div>
-                  <div style={{display:"flex",gap:5,flexWrap:"wrap",alignItems:"center"}}>
-                    <span className="tag" style={{background:pc.bgCard,color:pc.bg,border:`1px solid ${pc.bg}30`}}>{t.priority}</span>
-                    <span className="tag" style={{background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`}}>{t.status}</span>
-                    {owners.length>0&&<span style={{fontSize:10,color:T.t2}}>{owners.join(", ")}</span>}
-                    {peStr&&<span style={{fontSize:10,color:isAtRisk?T.p1:T.p3,fontFamily:"'JetBrains Mono',monospace",marginLeft:"auto"}}>→ {peStr.slice(5)}</span>}
-                  </div>
-                </div>
-              </div>
-              {/* Action buttons */}
-              <div style={{display:"flex",gap:6,marginTop:6}}>
-                {t.status!=="Released"&&(
-                  <button onClick={()=>release(t.id, t.name)} style={{
-                    flex:1,padding:"7px 0",borderRadius:5,fontSize:12,fontWeight:600,
-                    background:T.p3bg,color:T.p3,border:`1px solid ${T.sQA.border}`,cursor:"pointer",
-                  }}>✓ Release</button>
-                )}
-                {nextStatus && t.status!=="Released" && (
-                  <button onClick={()=>setStatus(t.id, nextStatus)} style={{
-                    flex:1,padding:"7px 0",borderRadius:5,fontSize:11,fontWeight:500,
-                    background:T.bg2,color:T.t1,border:`1px solid ${T.b2}`,cursor:"pointer",
-                  }}>→ {nextStatus}</button>
-                )}
-              </div>
-            </div>
-          );
-        })}
-        {visible.length===0&&(
-          <div style={{textAlign:"center",padding:"40px 0",color:T.t3,fontSize:13,fontStyle:"italic"}}>
-            {filter==="risk"?"No at-risk tasks — looking good! ✅":"No tasks in this view"}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── BURNDOWN CHART (H6) ────────────────────────────────────────────────────
-function BurndownChart({ tasks, config }) {
-  const sprintStart = config.sprintStart;
-  const sprintEnd   = config.sprintEnd||"2026-03-31";
-
-  const chartData = useMemo(() => {
-    const start = parseDate(sprintStart);
-    const end   = parseDate(sprintEnd);
-    const days  = [];
-    let cur = new Date(start);
-    while (cur <= end) {
-      if (!isWeekend(cur)) days.push(fmtDate(cur));
-      cur = addDays(cur, 1);
-    }
-    if (days.length === 0) return { days: [], ideal: [], actual: [], today: 0 };
-
-    const totalEffort = tasks.reduce((s,t)=>
-      s + ["ios","and","be","wc","qa"].reduce((ss,l)=>ss+Number(t.effort?.[l]||0),0)
-    , 0);
-
-    // Ideal line: linear from totalEffort → 0
-    const ideal = days.map((_,i) => Math.round(totalEffort * (1 - i/(days.length-1||1)) * 10)/10);
-
-    // Actual: remaining effort = totalEffort minus effort of tasks released on/before that day
-    const actual = days.map(d => {
-      const done = tasks.filter(t=>t.status==="Released"&&t.actualEnd&&t.actualEnd<=d)
-        .reduce((s,t)=>s+["ios","and","be","wc","qa"].reduce((ss,l)=>ss+Number(t.effort?.[l]||0),0),0);
-      return Math.max(0, totalEffort - done);
-    });
-
-    const today = fmtDate(new Date());
-    const todayIdx = days.findIndex(d=>d===today);
-
-    return { days, ideal, actual, totalEffort, todayIdx: todayIdx === -1 ? days.length-1 : todayIdx };
-  }, [tasks, sprintStart, sprintEnd]);
-
-  if (chartData.days.length === 0) return null;
-
-  const { days, ideal, actual, totalEffort, todayIdx } = chartData;
-  const W = 540, H = 160, PAD = { t:10, r:10, b:30, l:36 };
-  const innerW = W - PAD.l - PAD.r;
-  const innerH = H - PAD.t - PAD.b;
-  const maxY = Math.max(totalEffort, 1);
-  const xScale = (i) => PAD.l + (i / Math.max(days.length-1,1)) * innerW;
-  const yScale = (v) => PAD.t + innerH - (v / maxY) * innerH;
-
-  const idealPath = ideal.map((v,i)=>`${i===0?"M":"L"}${xScale(i)},${yScale(v)}`).join(" ");
-  const actualPath = actual.slice(0, todayIdx+1).map((v,i)=>`${i===0?"M":"L"}${xScale(i)},${yScale(v)}`).join(" ");
-
-  // Week tick marks
-  const weekTicks = days.reduce((acc, d, i) => {
-    const dt = parseDate(d);
-    if (dt.getDay() === 1) acc.push(i); // Monday
-    return acc;
-  }, []);
-
-  return (
-    <div style={{background:T.bg1,border:`1px solid ${T.b1}`,borderRadius:8,padding:"14px 16px"}}>
-      <div style={{fontSize:10,color:T.t2,fontWeight:500,textTransform:"uppercase",letterSpacing:0.8,marginBottom:10,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <span>Burndown</span>
-        <div style={{display:"flex",gap:12}}>
-          <span style={{display:"flex",alignItems:"center",gap:4,fontSize:9}}><span style={{width:16,height:2,background:T.b2,display:"inline-block"}}/> ideal</span>
-          <span style={{display:"flex",alignItems:"center",gap:4,fontSize:9}}><span style={{width:16,height:2,background:T.acc,display:"inline-block"}}/> actual</span>
-        </div>
-      </div>
-      <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{overflow:"visible"}}>
-        {/* Grid */}
-        {[0,0.25,0.5,0.75,1].map(frac=>{
-          const y = yScale(maxY*frac);
-          return <line key={frac} x1={PAD.l} y1={y} x2={W-PAD.r} y2={y} stroke={T.b1} strokeWidth={1}/>;
-        })}
-        {/* Y axis labels */}
-        {[0,0.5,1].map(frac=>(
-          <text key={frac} x={PAD.l-4} y={yScale(maxY*frac)+3} textAnchor="end" fontSize={8} fill={T.t3}>{Math.round(maxY*frac)}</text>
-        ))}
-        {/* Week ticks */}
-        {weekTicks.map(i=>(
-          <line key={i} x1={xScale(i)} y1={PAD.t} x2={xScale(i)} y2={H-PAD.b} stroke={T.b1} strokeWidth={1} strokeDasharray="2,3"/>
-        ))}
-        {/* Today line */}
-        {todayIdx>=0&&todayIdx<days.length&&(
-          <line x1={xScale(todayIdx)} y1={PAD.t} x2={xScale(todayIdx)} y2={H-PAD.b} stroke={T.acc} strokeWidth={1.5} strokeDasharray="4,3" opacity={0.7}/>
-        )}
-        {/* Sprint end line */}
-        <line x1={xScale(days.length-1)} y1={PAD.t} x2={xScale(days.length-1)} y2={H-PAD.b} stroke={T.p1} strokeWidth={1} strokeDasharray="3,2" opacity={0.5}/>
-        {/* Ideal line */}
-        <path d={idealPath} fill="none" stroke={T.b2} strokeWidth={1.5} strokeDasharray="4,3"/>
-        {/* Actual line */}
-        <path d={actualPath} fill="none" stroke={T.acc} strokeWidth={2.5}/>
-        {/* Actual last dot */}
-        {actual[todayIdx]!==undefined&&(
-          <circle cx={xScale(todayIdx)} cy={yScale(actual[todayIdx])} r={3} fill={T.acc}/>
-        )}
-        {/* X axis */}
-        <line x1={PAD.l} y1={H-PAD.b} x2={W-PAD.r} y2={H-PAD.b} stroke={T.b1} strokeWidth={1}/>
-        {/* X labels: sprint start + end */}
-        <text x={PAD.l} y={H-PAD.b+12} textAnchor="start" fontSize={8} fill={T.t3}>{sprintStart.slice(5)}</text>
-        <text x={W-PAD.r} y={H-PAD.b+12} textAnchor="end" fontSize={8} fill={T.p1}>{sprintEnd.slice(5)}</text>
-        {todayIdx>0&&<text x={xScale(todayIdx)} y={H-PAD.b+12} textAnchor="middle" fontSize={8} fill={T.acc}>today</text>}
-      </svg>
-    </div>
-  );
-}
-
-// ─── SHORTCUTS OVERLAY (H5) ───────────────────────────────────────────────────
-function ShortcutsOverlay() {
-  const [open, setOpen] = useState(false);
-  useEffect(() => {
-    const handler = () => setOpen(o=>!o);
-    window.addEventListener("sprintly:shortcuts", handler);
-    return () => window.removeEventListener("sprintly:shortcuts", handler);
-  }, []);
-  if (!open) return null;
-  const shortcuts = [
-    ["J / K", "Navigate tasks up/down"],
-    ["E", "Toggle edit mode"],
-    ["C", "Create new task"],
-    ["1 – 5", "Switch tabs (Overview → Insights)"],
-    ["?", "Show/hide this overlay"],
-    ["Esc", "Close drawer / overlay"],
-  ];
-  return (
-    <div style={{position:"fixed",inset:0,zIndex:9998,display:"flex",alignItems:"center",justifyContent:"center",background:"#00000040"}} onClick={()=>setOpen(false)}>
-      <div style={{background:T.bg0,border:`1px solid ${T.b1}`,borderRadius:10,padding:"20px 24px",minWidth:320,boxShadow:"0 8px 32px rgba(0,0,0,0.15)"}} onClick={e=>e.stopPropagation()}>
-        <div style={{fontSize:13,fontWeight:600,color:T.t0,marginBottom:14,display:"flex",justifyContent:"space-between"}}>
-          <span>Keyboard Shortcuts</span>
-          <button onClick={()=>setOpen(false)} style={{background:"none",border:"none",color:T.t2,cursor:"pointer",fontSize:16}}>×</button>
-        </div>
-        {shortcuts.map(([key,desc])=>(
-          <div key={key} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:`1px solid ${T.b0}`}}>
-            <span style={{fontSize:11,color:T.t1}}>{desc}</span>
-            <kbd style={{background:T.bg2,border:`1px solid ${T.b2}`,borderRadius:4,padding:"2px 8px",fontSize:11,fontFamily:"'JetBrains Mono',monospace",color:T.acc,fontWeight:500}}>{key}</kbd>
-          </div>
-        ))}
-        <div style={{marginTop:10,fontSize:10,color:T.t3,textAlign:"center"}}>Press ? again or click outside to close</div>
-      </div>
     </div>
   );
 }
