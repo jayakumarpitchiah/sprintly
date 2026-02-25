@@ -2238,7 +2238,7 @@ function TableView({tasks, config, editMode, updateTasks, updateConfig, predicti
         {/* Column headers */}
         <div style={{
           display:"grid",
-          gridTemplateColumns:editMode?"32px 36px 48px 1fr 160px 120px 100px 32px":"36px 48px 1fr 160px 120px 100px 28px",
+          gridTemplateColumns:editMode?"32px 36px 48px minmax(180px,2fr) minmax(120px,1fr) 110px 110px 32px":"36px 48px minmax(180px,2fr) minmax(120px,1fr) 110px 110px 28px",
           alignItems:"center",
           padding:"0 16px",
           height:32,
@@ -2305,7 +2305,7 @@ function TableView({tasks, config, editMode, updateTasks, updateConfig, predicti
                   onClick={()=> !editMode && onOpenTask && onOpenTask(t.id)}
                   style={{
                     display:"grid",
-                    gridTemplateColumns:editMode?"32px 36px 48px 1fr 160px 120px 100px 32px":"36px 48px 1fr 160px 120px 100px 28px",
+                    gridTemplateColumns:editMode?"32px 36px 48px minmax(180px,2fr) minmax(120px,1fr) 110px 110px 32px":"36px 48px minmax(180px,2fr) minmax(120px,1fr) 110px 110px 28px",
                     alignItems:"center",
                     padding:"0 16px",
                     minHeight:44,
