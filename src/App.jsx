@@ -4144,9 +4144,13 @@ function RetroView({ tasks, config, predictions, velocity }) {
 }
 
 // ─── KANBAN VIEW (H2) ─────────────────────────────────────────────────────────
+const LANE_ORDER = ["ios","and","be","wc","qa"];
+const LANE_LABEL = { ios:"iOS", and:"AND", be:"BE", wc:"WC", qa:"QA" };
+
 function KanbanView({ tasks, updateTasks, predictions, config, onOpenTask }) {
-  const [dragTask, setDragTask] = useState(null);
-  const [dragOver, setDragOver] = useState(null);
+  const [dragTask,    setDragTask]    = useState(null);
+  const [dragOver,    setDragOver]    = useState(null);
+  const [expandedId,  setExpandedId]  = useState(null); // task id with lanes expanded
   const sprintEnd = config.sprintEnd||"2026-03-31";
 
   const COLS = ["Planned","To Do","In Dev","Dev Done","In QA","Released","Blocked","Descoped"];
@@ -4165,13 +4169,23 @@ function KanbanView({ tasks, updateTasks, predictions, config, onOpenTask }) {
     setDragTask(null); setDragOver(null);
   };
 
+  const toggleLaneDone = (taskId, lane, isDone) => {
+    updateTasks(prev => prev.map(t => {
+      if (t.id !== taskId) return t;
+      const laneDone = { ...(t.laneDone||{}) };
+      if (isDone) { delete laneDone[lane]; }
+      else        { laneDone[lane] = true; }
+      return { ...t, laneDone };
+    }));
+  };
+
   const VISIBLE_COLS = COLS.filter(c => c !== "Descoped" || byStatus["Descoped"]?.length > 0);
 
   return (
     <div style={{padding:"16px 20px",height:"calc(100vh - 52px)",display:"flex",flexDirection:"column"}} className="fade-in">
       <div style={{fontSize:10,color:T.t2,textTransform:"uppercase",letterSpacing:0.8,fontWeight:500,marginBottom:12,display:"flex",alignItems:"center",gap:8}}>
         Kanban Board
-        <span style={{fontSize:9,color:T.t3,textTransform:"none",letterSpacing:0,fontWeight:400}}>drag cards to change status</span>
+        <span style={{fontSize:9,color:T.t3,textTransform:"none",letterSpacing:0,fontWeight:400}}>drag to move · click card to expand lanes</span>
       </div>
       <div style={{display:"flex",gap:10,flex:1,overflowX:"auto",overflowY:"hidden",paddingBottom:8}}>
         {VISIBLE_COLS.map(col=>{
@@ -4184,7 +4198,7 @@ function KanbanView({ tasks, updateTasks, predictions, config, onOpenTask }) {
               onDragLeave={()=>setDragOver(null)}
               onDrop={()=>dropOnCol(col)}
               style={{
-                width:220,minWidth:220,display:"flex",flexDirection:"column",
+                width:224,minWidth:224,display:"flex",flexDirection:"column",
                 background:isDragOver?`${sc.text}08`:T.bg1,
                 border:`1px solid ${isDragOver?sc.text:T.b1}`,
                 borderRadius:8,overflow:"hidden",
@@ -4195,58 +4209,181 @@ function KanbanView({ tasks, updateTasks, predictions, config, onOpenTask }) {
                 <span className="tag" style={{background:sc.bg,color:sc.text,border:`1px solid ${sc.border}`,fontSize:11}}>{col}</span>
                 <span style={{fontSize:11,fontWeight:600,color:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>{colTasks.length}</span>
               </div>
+
               {/* Cards */}
               <div style={{flex:1,overflowY:"auto",padding:"8px 6px",display:"flex",flexDirection:"column",gap:6}}>
-                {colTasks.length === 0 && (
+                {colTasks.length===0&&(
                   <div style={{textAlign:"center",padding:"20px 8px",fontSize:11,color:T.t3,fontStyle:"italic",opacity:0.6}}>empty</div>
                 )}
                 {colTasks.map(t=>{
                   const pc = PRIORITY_COLOR[t.priority]||PRIORITY_COLOR.P3;
                   const pe = taskPredictedEnd(t.id, predictions);
                   const isAtRisk = pe && fmtDate(pe) > sprintEnd && t.status !== "Released";
-                  const owners = [...new Set(Object.values(t.owners||{}).filter(Boolean))];
-                  const totalEff = Object.values(t.effort||{}).reduce((s,v)=>s+Number(v||0),0);
                   const isDragging = dragTask?.id === t.id;
+                  const isExpanded = expandedId === t.id;
+                  const totalEff = Object.values(t.effort||{}).reduce((s,v)=>s+Number(v||0),0);
+
+                  // lanes that have an owner assigned
+                  const activeLanes = LANE_ORDER.filter(l => t.owners?.[l]);
+                  const doneLanes   = activeLanes.filter(l => t.laneDone?.[l]);
+                  const multiLane   = activeLanes.length >= 2;
+                  const allDone     = multiLane && doneLanes.length === activeLanes.length;
+
                   return (
                     <div key={t.id}
                       draggable
-                      onDragStart={()=>setDragTask(t)}
-                      onDragEnd={()=>{setDragTask(null);setDragOver(null);}}
+                      onDragStart={()=>{ setDragTask(t); setExpandedId(null); }}
+                      onDragEnd={()=>{ setDragTask(null); setDragOver(null); }}
                       style={{
-                        background:isDragging?T.bg3:T.bg0,
-                        border:`1px solid ${isAtRisk?T.sBlk.border:isDragging?T.acc:T.b1}`,
-                        borderRadius:7,padding:"10px 12px",cursor:"grab",
+                        background: isDragging ? T.bg3 : T.bg0,
+                        border:`1px solid ${
+                          isExpanded ? T.acc :
+                          allDone    ? T.sQA.border :
+                          isAtRisk   ? T.sBlk.border :
+                          isDragging ? T.acc : T.b1
+                        }`,
+                        borderRadius:7,
+                        cursor:"grab",
                         opacity:isDragging?0.5:1,
-                        boxShadow:isDragging?"0 4px 12px rgba(0,0,0,0.15)":"0 1px 3px rgba(0,0,0,0.04)",
-                        transition:"opacity 0.1s",
+                        boxShadow: isExpanded
+                          ? `0 0 0 2px ${T.acc}20, 0 2px 10px rgba(0,0,0,0.07)`
+                          : isDragging ? "0 4px 12px rgba(0,0,0,0.15)" : "0 1px 3px rgba(0,0,0,0.04)",
+                        transition:"box-shadow 0.15s, border-color 0.15s, opacity 0.1s",
                         userSelect:"none",
+                        overflow:"hidden",
                       }}>
-                      {/* Top row: id + priority */}
-                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-                        <span style={{fontSize:9,color:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>#{t.id}</span>
-                        <div style={{display:"flex",gap:4,alignItems:"center"}}>
-                          {isAtRisk&&<span style={{fontSize:9,color:T.p1}}>⚠</span>}
-                          <span className="tag" style={{background:pc.bgCard,color:pc.bg,border:`1px solid ${pc.bg}30`,fontSize:9,padding:"1px 5px"}}>{t.priority}</span>
+
+                      {/* Card body — click to expand/collapse lanes */}
+                      <div
+                        onClick={e=>{ if(!e.defaultPrevented) setExpandedId(isExpanded?null:t.id); }}
+                        style={{padding:"10px 12px"}}>
+
+                        {/* Top row: id + priority + risk */}
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                          <span style={{fontSize:9,color:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>#{t.id}</span>
+                          <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                            {isAtRisk&&<span style={{fontSize:9,color:T.p1}}>⚠</span>}
+                            {allDone&&<span style={{fontSize:9,color:T.p3}}>✓ all lanes</span>}
+                            <span className="tag" style={{background:pc.bgCard,color:pc.bg,border:`1px solid ${pc.bg}30`,fontSize:9,padding:"1px 5px"}}>{t.priority}</span>
+                          </div>
                         </div>
+
+                        {/* Task name */}
+                        <button
+                          onClick={e=>{ e.preventDefault(); e.stopPropagation(); onOpenTask&&onOpenTask(t.id); }}
+                          style={{background:"none",border:"none",padding:0,cursor:"pointer",textAlign:"left",width:"100%",marginBottom:7}}>
+                          <span style={{fontSize:12,color:isAtRisk?T.p1:T.t0,fontWeight:500,lineHeight:1.35,display:"block"}}>{t.name}</span>
+                        </button>
+
+                        {/* Bottom row: owners + effort + pred end */}
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                          <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
+                            {[...new Set(Object.values(t.owners||{}).filter(Boolean))].slice(0,3).map(o=>(
+                              <span key={o} style={{fontSize:9,background:`${TEAM[o]?.bar||T.acc}18`,color:TEAM[o]?.bar||T.acc,border:`1px solid ${TEAM[o]?.bar||T.acc}30`,borderRadius:8,padding:"1px 5px",fontWeight:500}}>{o}</span>
+                            ))}
+                            {Object.values(t.owners||{}).filter(Boolean).length===0&&<span style={{fontSize:9,color:T.t3}}>—</span>}
+                          </div>
+                          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                            {totalEff>0&&<span style={{fontSize:9,color:T.t2,fontFamily:"'JetBrains Mono',monospace"}}>{totalEff}d</span>}
+                            {pe&&<span style={{fontSize:9,color:isAtRisk?T.p1:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>{fmtDate(pe).slice(5)}</span>}
+                          </div>
+                        </div>
+
+                        {/* LANE DOT STRIP — only for multi-lane tasks */}
+                        {multiLane&&(
+                          <div style={{
+                            display:"flex",alignItems:"center",gap:4,
+                            marginTop:8,paddingTop:7,
+                            borderTop:`1px solid ${T.b0}`,
+                          }}>
+                            <div style={{display:"flex",gap:3,alignItems:"center",flex:1}}>
+                              {activeLanes.map(l=>{
+                                const color = TEAM[t.owners[l]]?.bar || T.acc;
+                                const done  = !!t.laneDone?.[l];
+                                return (
+                                  <div key={l}
+                                    title={`${LANE_LABEL[l]} · ${t.owners[l]}${done?" · done ✓":" · in progress"}`}
+                                    style={{
+                                      width:9,height:9,borderRadius:"50%",
+                                      border:`1.5px solid ${color}`,
+                                      background: done ? color : "transparent",
+                                      flexShrink:0,
+                                      transition:"background 0.15s",
+                                    }}/>
+                                );
+                              })}
+                              {/* faded dots for unassigned lanes */}
+                              {LANE_ORDER.filter(l=>!t.owners?.[l]).map(l=>(
+                                <div key={l} style={{width:9,height:9,borderRadius:"50%",border:`1.5px solid ${T.b1}`,background:T.b0,opacity:0.4,flexShrink:0}}/>
+                              ))}
+                            </div>
+                            <span style={{
+                              fontSize:8,fontFamily:"'JetBrains Mono',monospace",
+                              color: allDone ? T.p3 : doneLanes.length>0 ? T.acc : T.t3,
+                              fontWeight: allDone||doneLanes.length>0 ? 600 : 400,
+                              flexShrink:0,
+                            }}>
+                              {doneLanes.length}/{activeLanes.length}{allDone?" ✓":""}
+                            </span>
+                          </div>
+                        )}
                       </div>
-                      {/* Task name */}
-                      <button onClick={()=>onOpenTask&&onOpenTask(t.id)} style={{background:"none",border:"none",padding:0,cursor:"pointer",textAlign:"left",width:"100%",marginBottom:6}}>
-                        <span style={{fontSize:12,color:isAtRisk?T.p1:T.t0,fontWeight:500,lineHeight:1.35,display:"block"}}>{t.name}</span>
-                      </button>
-                      {/* Bottom row: owners + effort + pred end */}
-                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                        <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
-                          {owners.slice(0,3).map(o=>(
-                            <span key={o} style={{fontSize:9,background:`${TEAM[o]?.bar||T.acc}18`,color:TEAM[o]?.bar||T.acc,border:`1px solid ${TEAM[o]?.bar||T.acc}30`,borderRadius:8,padding:"1px 5px",fontWeight:500}}>{o}</span>
-                          ))}
-                          {owners.length===0&&<span style={{fontSize:9,color:T.t3}}>—</span>}
+
+                      {/* EXPANDED LANE ROWS */}
+                      {isExpanded&&multiLane&&(
+                        <div style={{
+                          borderTop:`1px solid ${T.b1}`,
+                          background:T.bg1,
+                          padding:"8px 10px",
+                          display:"flex",flexDirection:"column",gap:5,
+                        }}
+                          onClick={e=>e.stopPropagation()}>
+                          {activeLanes.map(l=>{
+                            const owner = t.owners[l];
+                            const color = TEAM[owner]?.bar || T.acc;
+                            const eff   = Number(t.effort?.[l]||0);
+                            const done  = !!t.laneDone?.[l];
+                            return (
+                              <div key={l} style={{
+                                display:"grid",
+                                gridTemplateColumns:"30px 1fr 28px 24px",
+                                alignItems:"center",gap:6,
+                                padding:"5px 8px",borderRadius:5,
+                                background: done ? T.p3bg : T.bg0,
+                                border:`1px solid ${done ? T.sQA.border : T.b0}`,
+                              }}>
+                                <span style={{fontSize:8,fontWeight:700,textTransform:"uppercase",letterSpacing:0.4,color,fontFamily:"'JetBrains Mono',monospace"}}>{LANE_LABEL[l]}</span>
+                                <span style={{fontSize:10,color:done?T.t2:T.t0,fontWeight:500,textDecoration:done?"line-through":"none",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{owner}</span>
+                                {eff>0
+                                  ? <span style={{fontSize:9,color:T.t3,fontFamily:"'JetBrains Mono',monospace",textAlign:"right"}}>{eff}d</span>
+                                  : <span/>
+                                }
+                                {/* toggle done button */}
+                                <button
+                                  onClick={()=>toggleLaneDone(t.id, l, done)}
+                                  title={done?"Mark undone":"Mark lane done"}
+                                  style={{
+                                    width:20,height:20,borderRadius:"50%",
+                                    border:`1.5px solid ${done?T.p3:T.b2}`,
+                                    background: done ? T.p3bg : "transparent",
+                                    color: done ? T.p3 : T.t3,
+                                    display:"flex",alignItems:"center",justifyContent:"center",
+                                    fontSize:9,fontWeight:700,cursor:"pointer",
+                                    flexShrink:0,padding:0,
+                                    transition:"all 0.15s",
+                                  }}
+                                  onMouseEnter={e=>{ if(!done){ e.currentTarget.style.borderColor=T.p3; e.currentTarget.style.color=T.p3; e.currentTarget.style.background=T.p3bg; }}}
+                                  onMouseLeave={e=>{ if(!done){ e.currentTarget.style.borderColor=T.b2; e.currentTarget.style.color=T.t3; e.currentTarget.style.background="transparent"; }}}
+                                >{done?"✓":"○"}</button>
+                              </div>
+                            );
+                          })}
                         </div>
-                        <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                          {totalEff>0&&<span style={{fontSize:9,color:T.t2,fontFamily:"'JetBrains Mono',monospace"}}>{totalEff}d</span>}
-                          {pe&&<span style={{fontSize:9,color:isAtRisk?T.p1:T.t3,fontFamily:"'JetBrains Mono',monospace"}}>{fmtDate(pe).slice(5)}</span>}
-                        </div>
-                      </div>
-                      {t.notes&&<div style={{marginTop:5,fontSize:9,color:T.t2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.notes}</div>}
+                      )}
+
+                      {t.notes&&!isExpanded&&(
+                        <div style={{padding:"0 12px 8px",fontSize:9,color:T.t2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.notes}</div>
+                      )}
                     </div>
                   );
                 })}
